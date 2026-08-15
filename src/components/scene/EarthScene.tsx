@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Stars, useTexture } from '@react-three/drei'
-import { AdditiveBlending, BackSide, type Mesh } from 'three'
+import { AdditiveBlending, BackSide, Vector3, type Mesh } from 'three'
 import type { NearEarthObject } from '@/lib/nasa'
 import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
 
@@ -20,6 +20,37 @@ const STATUS_SAFE = '#0ca30c' // good
 const TYPE_SATELLITE = '#3987e5' // blue
 const TYPE_SHUTTLE = '#d95926' // orange
 const TYPE_STATION = '#199e70' // aqua
+
+// Shared by the directional light and the Earth day/night shader so the
+// terminator line always matches where the actual scene light comes from.
+const SUN_DIRECTION = new Vector3(5, 3, 5).normalize()
+
+const EARTH_DAY_NIGHT_VERTEX_SHADER = `
+  varying vec3 vNormal;
+  varying vec2 vUv;
+  void main() {
+    vNormal = normalize(normalMatrix * normal);
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const EARTH_DAY_NIGHT_FRAGMENT_SHADER = `
+  uniform sampler2D dayMap;
+  uniform sampler2D nightMap;
+  uniform vec3 sunDirection;
+  varying vec3 vNormal;
+  varying vec2 vUv;
+
+  void main() {
+    float sunFacing = dot(normalize(vNormal), normalize(sunDirection));
+    // Smooth terminator band rather than a hard day/night line.
+    float dayMix = smoothstep(-0.15, 0.15, sunFacing);
+    vec3 dayColor = texture2D(dayMap, vUv).rgb;
+    vec3 nightColor = texture2D(nightMap, vUv).rgb * 1.6; // city lights read as a glow, not a dim photo
+    gl_FragColor = vec4(mix(nightColor, dayColor, dayMix), 1.0);
+  }
+`
 
 function Clouds() {
   const meshRef = useRef<Mesh>(null)
@@ -70,7 +101,19 @@ function Atmosphere() {
 
 function Earth() {
   const meshRef = useRef<Mesh>(null)
-  const dayMap = useTexture('/textures/2k_earth_daymap.jpg')
+  const [dayMap, nightMap] = useTexture([
+    '/textures/2k_earth_daymap.jpg',
+    '/textures/2k_earth_nightmap.jpg',
+  ])
+
+  const uniforms = useMemo(
+    () => ({
+      dayMap: { value: dayMap },
+      nightMap: { value: nightMap },
+      sunDirection: { value: SUN_DIRECTION },
+    }),
+    [dayMap, nightMap],
+  )
 
   useFrame((_, delta) => {
     if (meshRef.current) {
@@ -82,7 +125,11 @@ function Earth() {
     <group>
       <mesh ref={meshRef}>
         <sphereGeometry args={[1, 64, 64]} />
-        <meshStandardMaterial map={dayMap} roughness={0.9} metalness={0.03} />
+        <shaderMaterial
+          uniforms={uniforms}
+          vertexShader={EARTH_DAY_NIGHT_VERTEX_SHADER}
+          fragmentShader={EARTH_DAY_NIGHT_FRAGMENT_SHADER}
+        />
       </mesh>
       <Clouds />
       <Atmosphere />
@@ -252,7 +299,7 @@ export function EarthScene() {
         dpr={[1, 2]}
       >
         <ambientLight intensity={0.4} />
-        <directionalLight position={[5, 3, 5]} intensity={1.6} />
+        <directionalLight position={SUN_DIRECTION} intensity={1.6} />
         <Earth />
         <NeoField objects={objects} />
         <IssTracker onFix={() => setIssTracked(true)} />
