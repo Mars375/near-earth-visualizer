@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Stars, useTexture } from '@react-three/drei'
-import { AdditiveBlending, BackSide, Vector3, type Mesh } from 'three'
+import { AdditiveBlending, BackSide, type DirectionalLight, type Mesh, type ShaderMaterial } from 'three'
 import type { NearEarthObject } from '@/lib/nasa'
 import {
+  PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
   subtract,
@@ -40,17 +41,13 @@ function simulatedJulianDate(elapsedSeconds: number): number {
   return BASE_JULIAN_DATE + elapsedSeconds * SIMULATED_DAYS_PER_SECOND
 }
 
-// Real Sun direction at load time (Earth's actual heliocentric position right
-// now), not an arbitrary artistic angle. Kept fixed for the day/night
-// terminator's whole session — only the rendered Sun mesh (see <Sun/>) moves
-// with simulated time, so the two can drift apart slowly over a long session.
-// That's an accepted approximation, not a bug.
-const initialEarthPos = earthHeliocentricPosition(BASE_JULIAN_DATE)
-const SUN_DIRECTION = new Vector3(
-  -initialEarthPos.x,
-  -initialEarthPos.y,
-  -initialEarthPos.z,
-).normalize()
+/** Earth-relative direction toward the Sun right now (live, simulated time) —
+ * the Sun sits at the heliocentric origin, so this is just -earthPosition. */
+function liveSunDirection(elapsedSeconds: number): [number, number, number] {
+  const earthPos = earthHeliocentricPosition(simulatedJulianDate(elapsedSeconds))
+  const length = Math.hypot(earthPos.x, earthPos.y, earthPos.z) || 1
+  return [-earthPos.x / length, -earthPos.y / length, -earthPos.z / length]
+}
 
 const EARTH_DAY_NIGHT_VERTEX_SHADER = `
   varying vec3 vNormal;
@@ -128,6 +125,7 @@ function Atmosphere() {
 
 function Earth() {
   const meshRef = useRef<Mesh>(null)
+  const materialRef = useRef<ShaderMaterial>(null)
   // Real daily satellite mosaic (NASA GIBS) instead of a static generic map.
   const [dayMap, nightMap] = useTexture([
     '/api/earth-imagery',
@@ -138,14 +136,27 @@ function Earth() {
     () => ({
       dayMap: { value: dayMap },
       nightMap: { value: nightMap },
-      sunDirection: { value: SUN_DIRECTION },
+      sunDirection: { value: liveSunDirection(0) },
     }),
     [dayMap, nightMap],
   )
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.05
+    }
+    // Live terminator: the day/night line tracks the Sun's real simulated
+    // position instead of a direction fixed at mount.
+    if (materialRef.current) {
+      const [x, y, z] = liveSunDirection(state.clock.elapsedTime)
+      const dir = materialRef.current.uniforms.sunDirection.value as {
+        x: number
+        y: number
+        z: number
+      }
+      dir.x = x
+      dir.y = y
+      dir.z = z
     }
   })
 
@@ -154,6 +165,7 @@ function Earth() {
       <mesh ref={meshRef}>
         <sphereGeometry args={[1, 64, 64]} />
         <shaderMaterial
+          ref={materialRef}
           uniforms={uniforms}
           vertexShader={EARTH_DAY_NIGHT_VERTEX_SHADER}
           fragmentShader={EARTH_DAY_NIGHT_FRAGMENT_SHADER}
@@ -165,29 +177,135 @@ function Earth() {
   )
 }
 
-/** The Sun, positioned from Earth's real (simulated-time) heliocentric
- * position — not a static prop. Size is artistic (a real-scale Sun at
- * AU_SCALE would be ~109x Earth's radius and swallow the scene); distance
- * is the real relative scale, same AU_SCALE as the asteroid orbits. */
-function Sun() {
-  const meshRef = useRef<Mesh>(null)
+/** Scene light standing in for actual sunlight — position tracks the same
+ * live direction as the Earth shader's terminator, so the two can never
+ * drift apart the way a fixed light direction would. */
+function SunLight() {
+  const lightRef = useRef<DirectionalLight>(null)
 
   useFrame((state) => {
-    if (!meshRef.current) return
+    if (!lightRef.current) return
+    const [x, y, z] = liveSunDirection(state.clock.elapsedTime)
+    lightRef.current.position.set(x * 5, y * 5, z * 5)
+  })
+
+  return <directionalLight ref={lightRef} intensity={1.6} />
+}
+
+const SUN_GLOW_VERTEX_SHADER = `
+  varying vec3 vNormal;
+  void main() {
+    vNormal = normalize(normalMatrix * normal);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const SUN_GLOW_FRAGMENT_SHADER = `
+  varying vec3 vNormal;
+  void main() {
+    float rim = pow(0.75 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.5);
+    gl_FragColor = vec4(1.0, 0.75, 0.35, clamp(rim, 0.0, 1.0));
+  }
+`
+
+/** The Sun: real texture, positioned from Earth's real (live, simulated)
+ * heliocentric position — not a static prop. Size is artistic (a
+ * real-scale Sun at AU_SCALE would be ~109x Earth's radius and swallow the
+ * scene); distance is the real relative scale, same AU_SCALE as the
+ * planets and asteroid orbits. */
+function Sun() {
+  const groupRef = useRef<Mesh>(null)
+  const surfaceMap = useTexture('/textures/2k_sun.jpg')
+
+  useFrame((state, delta) => {
+    if (!groupRef.current) return
     const jd = simulatedJulianDate(state.clock.elapsedTime)
     const earthPos = earthHeliocentricPosition(jd)
-    meshRef.current.position.set(
+    groupRef.current.position.set(
       -earthPos.x * AU_SCALE,
       -earthPos.y * AU_SCALE,
       -earthPos.z * AU_SCALE,
     )
+    groupRef.current.rotation.y += delta * 0.03
   })
 
   return (
-    <mesh ref={meshRef}>
-      <sphereGeometry args={[0.65, 32, 32]} />
-      <meshBasicMaterial color="#fff2c8" />
-    </mesh>
+    <group ref={groupRef}>
+      <mesh>
+        <sphereGeometry args={[0.65, 48, 48]} />
+        <meshBasicMaterial map={surfaceMap} />
+      </mesh>
+      <mesh scale={1.25}>
+        <sphereGeometry args={[0.65, 32, 32]} />
+        <shaderMaterial
+          vertexShader={SUN_GLOW_VERTEX_SHADER}
+          fragmentShader={SUN_GLOW_FRAGMENT_SHADER}
+          transparent
+          blending={AdditiveBlending}
+          side={BackSide}
+        />
+      </mesh>
+    </group>
+  )
+}
+
+type PlanetConfig = {
+  key: string
+  texture: string
+  radius: number
+  rotationPeriodDays: number
+}
+
+const PLANETS: PlanetConfig[] = [
+  { key: 'mercury', texture: '/textures/2k_mercury.jpg', radius: 0.06, rotationPeriodDays: 58.646 },
+  { key: 'venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.09, rotationPeriodDays: -243.025 },
+  { key: 'mars', texture: '/textures/2k_mars.jpg', radius: 0.055, rotationPeriodDays: 1.02596 },
+]
+
+/** A real neighboring planet, Earth-relative, on its real heliocentric
+ * orbit — same technique as the Sun and the asteroids. Rotation period is
+ * real too (Venus rotates backward: retrograde -243 days), scaled by the
+ * same simulated-time acceleration as everything else in the scene. */
+function Planet({ config }: { config: PlanetConfig }) {
+  const groupRef = useRef<Mesh>(null)
+  const spinRef = useRef<Mesh>(null)
+  const map = useTexture(config.texture)
+  const elements = PLANETARY_ELEMENTS[config.key]
+
+  useFrame((state) => {
+    if (!groupRef.current) return
+    const jd = simulatedJulianDate(state.clock.elapsedTime)
+    const planetPos = heliocentricPosition(elements, jd)
+    const earthPos = earthHeliocentricPosition(jd)
+    const relative = subtract(planetPos, earthPos)
+    groupRef.current.position.set(
+      relative.x * AU_SCALE,
+      relative.y * AU_SCALE,
+      relative.z * AU_SCALE,
+    )
+    if (spinRef.current) {
+      const simulatedDaysElapsed = jd - BASE_JULIAN_DATE
+      spinRef.current.rotation.y = (simulatedDaysElapsed / config.rotationPeriodDays) * Math.PI * 2
+    }
+  })
+
+  return (
+    <group ref={groupRef}>
+      <mesh ref={spinRef}>
+        <sphereGeometry args={[config.radius, 24, 24]} />
+        <meshStandardMaterial map={map} roughness={0.9} />
+      </mesh>
+    </group>
+  )
+}
+
+function InnerSolarSystem() {
+  return (
+    <>
+      {PLANETS.map((config) => (
+        <Planet key={config.key} config={config} />
+      ))}
+    </>
   )
 }
 
@@ -350,13 +468,14 @@ export function EarthScene() {
         dpr={[1, 2]}
       >
         <ambientLight intensity={0.25} />
-        <directionalLight position={SUN_DIRECTION} intensity={1.6} />
+        <SunLight />
         <Sun />
         <Earth />
+        <InnerSolarSystem />
         <NeoField objects={objects} />
         <IssTracker onFix={() => setIssTracked(true)} />
         <Stars radius={80} depth={40} count={3000} factor={3} fade />
-        <OrbitControls enablePan={false} minDistance={1.5} maxDistance={12} />
+        <OrbitControls enablePan={false} minDistance={1.5} maxDistance={20} />
       </Canvas>
       <TypeLegend neoCount={objects.length} trackedCount={trackedCount} issTracked={issTracked} />
     </div>

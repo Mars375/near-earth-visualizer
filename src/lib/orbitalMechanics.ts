@@ -11,14 +11,7 @@ export type OrbitalElements = {
 
 export type Vec3 = { x: number; y: number; z: number }
 
-/** Earth's real orbit is nearly circular (e = 0.0167); simplified to a
- * perfect circle at 1 AU using its actual J2000 mean-longitude reference,
- * which keeps Earth's heliocentric direction accurate to a couple of
- * degrees without needing the full elliptical solve for a body this close
- * to circular. */
-const EARTH_MEAN_LONGITUDE_J2000_DEG = 100.46435
-const EARTH_MEAN_MOTION_DEG_PER_DAY = 0.98560912
-const J2000_JULIAN_DATE = 2451545.0
+export const J2000_JULIAN_DATE = 2451545.0
 
 export function unixMsToJulianDate(unixMs: number): number {
   return unixMs / 86400000 + 2440587.5
@@ -79,15 +72,76 @@ export function heliocentricPosition(elements: OrbitalElements, julianDate: numb
   return { x, y, z }
 }
 
+/**
+ * Standard low-precision J2000.0 mean orbital elements for the inner
+ * planets (JPL/Meeus "Keplerian elements for approximate positions of the
+ * major planets"), converted from the usual (a, e, i, Ω, ϖ, L) table into
+ * this module's (Ω, ω, M0) form: ω = ϖ - Ω, M0 = L - ϖ. Valid to a couple
+ * of degrees around the present era — plenty for this visualization, and
+ * real published numbers rather than an invented approximation.
+ */
+export const PLANETARY_ELEMENTS: Record<string, OrbitalElements> = {
+  mercury: {
+    semiMajorAxisAu: 0.38709927,
+    eccentricity: 0.20563593,
+    inclinationDeg: 7.00497902,
+    ascendingNodeDeg: 48.33076593,
+    perihelionArgumentDeg: 29.12703035,
+    meanAnomalyDeg: 174.79252722,
+    meanMotionDegPerDay: 4.09233445,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  venus: {
+    semiMajorAxisAu: 0.72333566,
+    eccentricity: 0.00677672,
+    inclinationDeg: 3.39467605,
+    ascendingNodeDeg: 76.67984255,
+    perihelionArgumentDeg: 54.92262463,
+    meanAnomalyDeg: 50.37663232,
+    meanMotionDegPerDay: 1.60213022,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  earth: {
+    semiMajorAxisAu: 1.00000261,
+    eccentricity: 0.01671123,
+    inclinationDeg: -0.00001531,
+    ascendingNodeDeg: 0,
+    perihelionArgumentDeg: 102.93768193,
+    meanAnomalyDeg: 357.52688973,
+    meanMotionDegPerDay: 0.98560912,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  mars: {
+    semiMajorAxisAu: 1.52371034,
+    eccentricity: 0.09339410,
+    inclinationDeg: 1.84969142,
+    ascendingNodeDeg: 49.55953891,
+    perihelionArgumentDeg: 286.4968315,
+    meanAnomalyDeg: 19.39019754,
+    meanMotionDegPerDay: 0.52402068,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+}
+
 export function earthHeliocentricPosition(julianDate: number): Vec3 {
-  const daysSinceJ2000 = julianDate - J2000_JULIAN_DATE
-  const positionAngleDeg = normalizeDeg(
-    EARTH_MEAN_LONGITUDE_J2000_DEG + EARTH_MEAN_MOTION_DEG_PER_DAY * daysSinceJ2000,
-  )
-  const angle = degToRad(positionAngleDeg)
-  return { x: Math.cos(angle), y: 0, z: Math.sin(angle) }
+  return heliocentricPosition(PLANETARY_ELEMENTS.earth, julianDate)
 }
 
 export function subtract(a: Vec3, b: Vec3): Vec3 {
   return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
+}
+
+/** Samples a full ellipse for drawing a static orbit-path line. */
+export function orbitPathPoints(elements: OrbitalElements, segments = 128): Vec3[] {
+  const points: Vec3[] = []
+  for (let i = 0; i <= segments; i += 1) {
+    const meanAnomalyDeg = (360 * i) / segments
+    points.push(
+      heliocentricPosition(
+        { ...elements, meanAnomalyDeg, meanMotionDegPerDay: 0, epochJulianDate: 0 },
+        0,
+      ),
+    )
+  }
+  return points
 }
