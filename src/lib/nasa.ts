@@ -1,3 +1,5 @@
+import type { OrbitalElements } from './orbitalMechanics'
+
 export type NearEarthObject = {
   id: string
   name: string
@@ -6,6 +8,7 @@ export type NearEarthObject = {
   closeApproachDate: string
   missDistanceKm: number
   relativeVelocityKmS: number
+  orbit: OrbitalElements | null
 }
 
 type NeoWsFeedResponse = {
@@ -27,15 +30,57 @@ type NeoWsFeedResponse = {
   >
 }
 
-const NASA_API_BASE = 'https://api.nasa.gov/neo/rest/v1/feed'
+type NeoWsLookupResponse = {
+  orbital_data: {
+    semi_major_axis: string
+    eccentricity: string
+    inclination: string
+    ascending_node_longitude: string
+    perihelion_argument: string
+    mean_anomaly: string
+    mean_motion: string
+    epoch_osculation: string
+  }
+}
+
+const NASA_API_BASE = 'https://api.nasa.gov/neo/rest/v1'
+
+function apiKey(): string {
+  return process.env.NASA_API_KEY ?? 'DEMO_KEY'
+}
+
+/** One lookup call per object — real orbital elements, not just the close-approach summary. */
+async function fetchOrbitalElements(id: string): Promise<OrbitalElements | null> {
+  try {
+    const response = await fetch(`${NASA_API_BASE}/neo/${id}?api_key=${apiKey()}`, {
+      next: { revalidate: 86400 },
+    })
+    if (!response.ok) return null
+    const data = (await response.json()) as NeoWsLookupResponse
+    const o = data.orbital_data
+    return {
+      semiMajorAxisAu: Number(o.semi_major_axis),
+      eccentricity: Number(o.eccentricity),
+      inclinationDeg: Number(o.inclination),
+      ascendingNodeDeg: Number(o.ascending_node_longitude),
+      perihelionArgumentDeg: Number(o.perihelion_argument),
+      meanAnomalyDeg: Number(o.mean_anomaly),
+      meanMotionDegPerDay: Number(o.mean_motion),
+      epochJulianDate: Number(o.epoch_osculation),
+    }
+  } catch {
+    return null
+  }
+}
 
 /**
- * Fetches near-Earth objects for a single UTC date from NASA's NeoWs feed.
- * Falls back to the shared DEMO_KEY (30 req/hour) when NASA_API_KEY is unset.
+ * Fetches near-Earth objects for a single UTC date from NASA's NeoWs feed,
+ * then fetches each object's real heliocentric orbital elements via the
+ * per-object lookup endpoint (needs a real NASA_API_KEY — DEMO_KEY's 30
+ * req/hour limit can't cover a day's worth of objects).
  */
 export async function fetchNearEarthObjects(date: string): Promise<NearEarthObject[]> {
-  const apiKey = process.env.NASA_API_KEY ?? 'DEMO_KEY'
-  const url = `${NASA_API_BASE}?start_date=${date}&end_date=${date}&api_key=${apiKey}`
+  const url = `${NASA_API_BASE}/feed?start_date=${date}&end_date=${date}&api_key=${apiKey()}`
 
   const response = await fetch(url, { next: { revalidate: 3600 } })
   if (!response.ok) {
@@ -45,20 +90,24 @@ export async function fetchNearEarthObjects(date: string): Promise<NearEarthObje
   const data = (await response.json()) as NeoWsFeedResponse
   const objects = data.near_earth_objects[date] ?? []
 
-  return objects.map((neo) => {
-    const approach = neo.close_approach_data[0]
-    const diameter = neo.estimated_diameter.kilometers
-    return {
-      id: neo.id,
-      name: neo.name,
-      estimatedDiameterKm:
-        (diameter.estimated_diameter_min + diameter.estimated_diameter_max) / 2,
-      isPotentiallyHazardous: neo.is_potentially_hazardous_asteroid,
-      closeApproachDate: approach?.close_approach_date ?? date,
-      missDistanceKm: approach ? Number(approach.miss_distance.kilometers) : 0,
-      relativeVelocityKmS: approach
-        ? Number(approach.relative_velocity.kilometers_per_second)
-        : 0,
-    }
-  })
+  return Promise.all(
+    objects.map(async (neo) => {
+      const approach = neo.close_approach_data[0]
+      const diameter = neo.estimated_diameter.kilometers
+      const orbit = await fetchOrbitalElements(neo.id)
+      return {
+        id: neo.id,
+        name: neo.name,
+        estimatedDiameterKm:
+          (diameter.estimated_diameter_min + diameter.estimated_diameter_max) / 2,
+        isPotentiallyHazardous: neo.is_potentially_hazardous_asteroid,
+        closeApproachDate: approach?.close_approach_date ?? date,
+        missDistanceKm: approach ? Number(approach.miss_distance.kilometers) : 0,
+        relativeVelocityKmS: approach
+          ? Number(approach.relative_velocity.kilometers_per_second)
+          : 0,
+        orbit,
+      }
+    }),
+  )
 }
