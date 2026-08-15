@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Stars, useTexture } from '@react-three/drei'
-import type { Mesh } from 'three'
+import { AdditiveBlending, BackSide, type Mesh } from 'three'
 import type { NearEarthObject } from '@/lib/nasa'
 import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
 
@@ -21,6 +21,53 @@ const TYPE_SATELLITE = '#3987e5' // blue
 const TYPE_SHUTTLE = '#d95926' // orange
 const TYPE_STATION = '#199e70' // aqua
 
+function Clouds() {
+  const meshRef = useRef<Mesh>(null)
+  const cloudsMap = useTexture('/textures/2k_earth_clouds.jpg')
+
+  useFrame((_, delta) => {
+    if (meshRef.current) {
+      meshRef.current.rotation.y += delta * 0.065
+    }
+  })
+
+  return (
+    <mesh ref={meshRef}>
+      <sphereGeometry args={[1.008, 64, 64]} />
+      {/* Cloud map is white-on-black with no alpha channel; additive blending
+          makes the black background contribute nothing while clouds glow. */}
+      <meshBasicMaterial map={cloudsMap} blending={AdditiveBlending} transparent opacity={0.35} />
+    </mesh>
+  )
+}
+
+function Atmosphere() {
+  return (
+    <mesh scale={1.06}>
+      <sphereGeometry args={[1, 64, 64]} />
+      <shaderMaterial
+        vertexShader={`
+          varying vec3 vNormal;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `}
+        fragmentShader={`
+          varying vec3 vNormal;
+          void main() {
+            float rim = pow(0.7 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 3.0);
+            gl_FragColor = vec4(0.35, 0.55, 1.0, clamp(rim, 0.0, 1.0));
+          }
+        `}
+        transparent
+        blending={AdditiveBlending}
+        side={BackSide}
+      />
+    </mesh>
+  )
+}
+
 function Earth() {
   const meshRef = useRef<Mesh>(null)
   const dayMap = useTexture('/textures/2k_earth_daymap.jpg')
@@ -32,42 +79,86 @@ function Earth() {
   })
 
   return (
-    <mesh ref={meshRef}>
-      <sphereGeometry args={[1, 64, 64]} />
-      <meshStandardMaterial map={dayMap} roughness={0.9} metalness={0.03} />
-    </mesh>
+    <group>
+      <mesh ref={meshRef}>
+        <sphereGeometry args={[1, 64, 64]} />
+        <meshStandardMaterial map={dayMap} roughness={0.9} metalness={0.03} />
+      </mesh>
+      <Clouds />
+      <Atmosphere />
+    </group>
   )
 }
 
-/** Deterministic pseudo-orbit placement, not real orbital mechanics (that's NEC-05). */
-function schematicPosition(neo: NearEarthObject, index: number): [number, number, number] {
+type OrbitDefinition = {
+  radius: number
+  phi: number
+  theta0: number
+  angularSpeed: number
+}
+
+function hashId(id: string): number {
   let hash = 0
-  for (let i = 0; i < neo.id.length; i += 1) {
-    hash = (hash * 31 + neo.id.charCodeAt(i)) >>> 0
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0
   }
-  const theta = ((hash % 360) / 360) * Math.PI * 2
+  return hash
+}
+
+/**
+ * NEC-05: not a true Keplerian ellipse (NASA's per-object orbital elements
+ * require one lookup call per asteroid, impractical under DEMO_KEY's rate
+ * limit) — a real-data-informed circular approximation instead. Radius comes
+ * from the actual miss distance (log-scaled to stay on screen); angular
+ * speed is linearly mapped from the actual relative velocity, so an object
+ * NASA reports as faster visibly orbits faster than a slower one, in the
+ * correct relative order, just not at real-world angular rate.
+ */
+function orbitDefinition(
+  neo: NearEarthObject,
+  index: number,
+  velocityRange: { min: number; max: number },
+): OrbitDefinition {
+  const hash = hashId(neo.id)
+  const theta0 = ((hash % 360) / 360) * Math.PI * 2
   const phi = (((hash >> 8) % 180) / 180) * Math.PI - Math.PI / 2
 
-  // Log-scale the (huge, widely-varying) miss distance into a readable shell radius.
-  const distanceShell = Math.min(
+  const radius = Math.min(
     6,
     1.8 + Math.log10(Math.max(neo.missDistanceKm, 1e5)) * 0.35 + index * 0.01,
   )
 
-  return [
-    distanceShell * Math.cos(phi) * Math.cos(theta),
-    distanceShell * Math.sin(phi),
-    distanceShell * Math.cos(phi) * Math.sin(theta),
-  ]
+  const span = velocityRange.max - velocityRange.min
+  const t = span > 0 ? (neo.relativeVelocityKmS - velocityRange.min) / span : 0.5
+  const angularSpeed = 0.02 + t * 0.16 // rad/s, legible range
+
+  return { radius, phi, theta0, angularSpeed }
 }
 
-function NeoMarker({ neo, position }: { neo: NearEarthObject; position: [number, number, number] }) {
+function NeoMarker({
+  neo,
+  orbit,
+}: {
+  neo: NearEarthObject
+  orbit: OrbitDefinition
+}) {
+  const meshRef = useRef<Mesh>(null)
   // Clamp so a 30m rock and a 1km rock both stay legible on screen.
   const radius = Math.min(0.12, Math.max(0.02, neo.estimatedDiameterKm * 0.05))
   const color = neo.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
 
+  useFrame((state) => {
+    if (!meshRef.current) return
+    const theta = orbit.theta0 + state.clock.elapsedTime * orbit.angularSpeed
+    meshRef.current.position.set(
+      orbit.radius * Math.cos(orbit.phi) * Math.cos(theta),
+      orbit.radius * Math.sin(orbit.phi),
+      orbit.radius * Math.cos(orbit.phi) * Math.sin(theta),
+    )
+  })
+
   return (
-    <mesh position={position}>
+    <mesh ref={meshRef}>
       <sphereGeometry args={[radius, 12, 12]} />
       <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
     </mesh>
@@ -75,10 +166,15 @@ function NeoMarker({ neo, position }: { neo: NearEarthObject; position: [number,
 }
 
 function NeoField({ objects }: { objects: NearEarthObject[] }) {
+  const velocityRange = useMemo(() => {
+    const speeds = objects.map((neo) => neo.relativeVelocityKmS)
+    return { min: Math.min(...speeds, 0), max: Math.max(...speeds, 0) }
+  }, [objects])
+
   return (
     <group>
       {objects.map((neo, index) => (
-        <NeoMarker key={neo.id} neo={neo} position={schematicPosition(neo, index)} />
+        <NeoMarker key={neo.id} neo={neo} orbit={orbitDefinition(neo, index, velocityRange)} />
       ))}
     </group>
   )
