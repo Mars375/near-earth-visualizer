@@ -9,16 +9,19 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
+import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
 import { Line, OrbitControls, Stars, useTexture } from '@react-three/drei'
 import {
   AdditiveBlending,
   BackSide,
+  Vector3,
   type DirectionalLight,
   type Group,
   type Mesh,
+  type Object3D,
   type ShaderMaterial,
 } from 'three'
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import type { NearEarthObject } from '@/lib/nasa'
 import {
   PLANETARY_ELEMENTS,
@@ -46,35 +49,93 @@ const TYPE_SHUTTLE = '#d95926' // orange
 const TYPE_STATION = '#199e70' // aqua
 
 const AU_IN_KM = 149_597_870.7
+const EARTH_RADIUS = 0.5 // scene units — was an oversized 1
+const AU_SCALE = 6 // scene units per AU inside the inner system — was 4, more breathing room
 
-// Real-time anchor for the orbital simulation clock: Julian Date at module
-// load, advanced by simulated days per real second so orbital motion (whose
-// real periods are months to years) is visible within a viewing session
-// instead of imperceptibly slow. See orbitalMechanics.ts.
-const BASE_JULIAN_DATE = unixMsToJulianDate(Date.now())
-const SIMULATED_DAYS_PER_SECOND = 8
-const AU_SCALE = 4 // scene units per astronomical unit
+// Beyond Mars' neighborhood, real AU distances get compressed (log scale) so
+// Neptune doesn't require an absurd camera distance to include. This is a
+// deliberate "subway map" distortion for the outer solar system, not a claim
+// of literal scale — inner planets stay at true relative distance.
+const OUTER_COMPRESSION_START_AU = 2.2
+const OUTER_COMPRESSION_FACTOR = 2.5
 
-function simulatedJulianDate(elapsedSeconds: number): number {
-  return BASE_JULIAN_DATE + elapsedSeconds * SIMULATED_DAYS_PER_SECOND
+function sceneDistanceForAu(auDistance: number): number {
+  if (auDistance <= OUTER_COMPRESSION_START_AU) return auDistance * AU_SCALE
+  const linear = OUTER_COMPRESSION_START_AU * AU_SCALE
+  const compressed = Math.log10(1 + (auDistance - OUTER_COMPRESSION_START_AU)) * OUTER_COMPRESSION_FACTOR * AU_SCALE
+  return linear + compressed
 }
 
-/** Earth-relative direction toward the Sun right now (live, simulated time) —
- * the Sun sits at the heliocentric origin, so this is just -earthPosition. */
-function liveSunDirection(elapsedSeconds: number): [number, number, number] {
-  const earthPos = earthHeliocentricPosition(simulatedJulianDate(elapsedSeconds))
+/** Scales a heliocentric AU-space vector into scene units, preserving
+ * direction and applying the outer-system distance compression. */
+function toScenePosition(vec: { x: number; y: number; z: number }): [number, number, number] {
+  const distance = Math.hypot(vec.x, vec.y, vec.z) || 1e-9
+  const scale = sceneDistanceForAu(distance) / distance
+  return [vec.x * scale, vec.y * scale, vec.z * scale]
+}
+
+// ---------------------------------------------------------------------------
+// Simulation clock — one authoritative accumulator (real elapsed seconds
+// integrated by a live-adjustable speed), read by every other component.
+// Runs at R3F priority -1 so it always updates before anything reading it
+// in the same frame.
+// ---------------------------------------------------------------------------
+
+const REALTIME_DAYS_PER_SECOND = 1 / 86400
+const ACCELERATED_DAYS_PER_SECOND = 8
+const FAST_DAYS_PER_SECOND = 45
+
+const BASE_JULIAN_DATE = unixMsToJulianDate(Date.now())
+
+type SpeedRef = { current: number }
+type ClockRef = { current: number }
+
+const SpeedContext = createContext<SpeedRef>({ current: ACCELERATED_DAYS_PER_SECOND })
+const ClockContext = createContext<ClockRef>({ current: BASE_JULIAN_DATE })
+
+function useSimulationClock(): ClockRef {
+  return useContext(ClockContext)
+}
+
+function SimulationClockProvider({
+  speedRef,
+  children,
+}: {
+  speedRef: SpeedRef
+  children: React.ReactNode
+}) {
+  // A real ref: mutated every frame in useFrame (never read during render —
+  // consumers read .current themselves, later, inside their own useFrame).
+  // The ref *object* is passed through context, not its .current value.
+  const clockRef = useRef<number>(BASE_JULIAN_DATE)
+
+  useFrame((_, delta) => {
+    clockRef.current += delta * speedRef.current
+  }, -1)
+
+  return (
+    <SpeedContext.Provider value={speedRef}>
+      <ClockContext.Provider value={clockRef}>{children}</ClockContext.Provider>
+    </SpeedContext.Provider>
+  )
+}
+
+/** Earth-relative direction toward the Sun right now — the Sun sits at the
+ * heliocentric origin, so this is just -earthPosition. */
+function sunDirectionAt(julianDate: number): [number, number, number] {
+  const earthPos = earthHeliocentricPosition(julianDate)
   const length = Math.hypot(earthPos.x, earthPos.y, earthPos.z) || 1
   return [-earthPos.x / length, -earthPos.y / length, -earthPos.z / length]
 }
 
 // ---------------------------------------------------------------------------
-// Selection / info panel
+// Selection / camera focus / info panel
 // ---------------------------------------------------------------------------
 
 type InfoRow = { label: string; value: string }
 type SelectedInfo = { title: string; subtitle: string; rows: InfoRow[] }
 
-const SelectionContext = createContext<(info: SelectedInfo | null) => void>(() => {})
+const SelectionContext = createContext<(info: SelectedInfo, target?: Object3D | null) => void>(() => {})
 
 function useSelect() {
   return useContext(SelectionContext)
@@ -109,15 +170,42 @@ function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void 
   )
 }
 
+/** Re-centers OrbitControls' orbit point on the selected object's live world
+ * position every frame — "focus" means the camera keeps orbiting a moving
+ * target instead of the selection just being informational. Keeps the
+ * user's current zoom distance; only the orbit center moves. */
+function CameraFocus({
+  target,
+  controlsRef,
+}: {
+  target: Object3D | null
+  controlsRef: React.RefObject<OrbitControlsImpl | null>
+}) {
+  const worldPos = useMemo(() => new Vector3(), [])
+
+  useFrame(() => {
+    if (!target || !controlsRef.current) return
+    target.getWorldPosition(worldPos)
+    controlsRef.current.target.lerp(worldPos, 0.08)
+    controlsRef.current.update()
+  })
+
+  return null
+}
+
 // ---------------------------------------------------------------------------
 // Earth
 // ---------------------------------------------------------------------------
 
 const EARTH_DAY_NIGHT_VERTEX_SHADER = `
-  varying vec3 vNormal;
+  varying vec3 vWorldNormal;
   varying vec2 vUv;
   void main() {
-    vNormal = normalize(normalMatrix * normal);
+    // World-space normal — must match sunDirection's own world-space frame.
+    // (A view-space normal here was the bug: the terminator would visibly
+    // shift whenever the camera orbited, since it was being compared
+    // against a world-space sun direction.)
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
     vUv = uv;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
@@ -127,11 +215,11 @@ const EARTH_DAY_NIGHT_FRAGMENT_SHADER = `
   uniform sampler2D dayMap;
   uniform sampler2D nightMap;
   uniform vec3 sunDirection;
-  varying vec3 vNormal;
+  varying vec3 vWorldNormal;
   varying vec2 vUv;
 
   void main() {
-    float sunFacing = dot(normalize(vNormal), normalize(sunDirection));
+    float sunFacing = dot(normalize(vWorldNormal), normalize(sunDirection));
     // Smooth terminator band rather than a hard day/night line.
     float dayMix = smoothstep(-0.15, 0.15, sunFacing);
     vec3 dayColor = texture2D(dayMap, vUv).rgb;
@@ -152,7 +240,7 @@ function Clouds() {
 
   return (
     <mesh ref={meshRef}>
-      <sphereGeometry args={[1.008, 64, 64]} />
+      <sphereGeometry args={[EARTH_RADIUS * 1.008, 64, 64]} />
       {/* Cloud map is white-on-black with no alpha channel; additive blending
           makes the black background contribute nothing while clouds glow. */}
       <meshBasicMaterial map={cloudsMap} blending={AdditiveBlending} transparent opacity={0.35} />
@@ -163,7 +251,7 @@ function Clouds() {
 function Atmosphere() {
   return (
     <mesh scale={1.06}>
-      <sphereGeometry args={[1, 64, 64]} />
+      <sphereGeometry args={[EARTH_RADIUS, 64, 64]} />
       <shaderMaterial
         vertexShader={`
           varying vec3 vNormal;
@@ -191,6 +279,7 @@ function Earth() {
   const meshRef = useRef<Mesh>(null)
   const materialRef = useRef<ShaderMaterial>(null)
   const select = useSelect()
+  const clockRef = useSimulationClock()
   // Real daily satellite mosaic (NASA GIBS) instead of a static generic map.
   const [dayMap, nightMap] = useTexture(['/api/earth-imagery', '/textures/2k_earth_nightmap.jpg'])
 
@@ -198,19 +287,19 @@ function Earth() {
     () => ({
       dayMap: { value: dayMap },
       nightMap: { value: nightMap },
-      sunDirection: { value: liveSunDirection(0) },
+      sunDirection: { value: sunDirectionAt(BASE_JULIAN_DATE) },
     }),
     [dayMap, nightMap],
   )
 
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
     if (meshRef.current) {
       meshRef.current.rotation.y += delta * 0.05
     }
     // Live terminator: the day/night line tracks the Sun's real simulated
     // position instead of a direction fixed at mount.
     if (materialRef.current) {
-      const [x, y, z] = liveSunDirection(state.clock.elapsedTime)
+      const [x, y, z] = sunDirectionAt(clockRef.current)
       const dir = materialRef.current.uniforms.sunDirection.value as {
         x: number
         y: number
@@ -223,12 +312,11 @@ function Earth() {
   })
 
   return (
-    <group>
-      <mesh
-        ref={meshRef}
-        onClick={(event: ThreeEvent<MouseEvent>) => {
-          event.stopPropagation()
-          select({
+    <group
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        select(
+          {
             title: 'Earth',
             subtitle: 'Home planet — scene reference point',
             rows: [
@@ -236,10 +324,13 @@ function Earth() {
               { label: 'Orbital period', value: '365.25 days' },
               { label: 'Rotation period', value: '23h 56m' },
             ],
-          })
-        }}
-      >
-        <sphereGeometry args={[1, 64, 64]} />
+          },
+          meshRef.current,
+        )
+      }}
+    >
+      <mesh ref={meshRef}>
+        <sphereGeometry args={[EARTH_RADIUS, 64, 64]} />
         <shaderMaterial
           ref={materialRef}
           uniforms={uniforms}
@@ -258,19 +349,20 @@ function Earth() {
 // ---------------------------------------------------------------------------
 
 /** Tracks the same live direction as the Earth shader's terminator, so the
- * two can never drift apart the way a fixed light direction would. This is
- * the ONLY light in the scene — no ambient fill — so unlit sides of
- * planets/moons go genuinely dark, the way sunlight actually works. */
+ * two can never drift apart. This is the ONLY light in the scene — no
+ * ambient fill — so unlit sides of planets go genuinely dark, the way
+ * sunlight actually works. */
 function SunLight() {
   const lightRef = useRef<DirectionalLight>(null)
+  const clockRef = useSimulationClock()
 
-  useFrame((state) => {
+  useFrame(() => {
     if (!lightRef.current) return
-    const [x, y, z] = liveSunDirection(state.clock.elapsedTime)
+    const [x, y, z] = sunDirectionAt(clockRef.current)
     lightRef.current.position.set(x * 5, y * 5, z * 5)
   })
 
-  return <directionalLight ref={lightRef} intensity={2.2} />
+  return <directionalLight ref={lightRef} intensity={2.4} />
 }
 
 const SUN_GLOW_VERTEX_SHADER = `
@@ -290,11 +382,10 @@ const SUN_GLOW_FRAGMENT_SHADER = `
 `
 
 /** The Sun: real texture, self-lit (meshBasicMaterial ignores scene
- * lighting, which is correct — the Sun is the light source, not something
- * lit by it). Lives inside <HeliocentricFrame>, so its local position is
- * always the heliocentric origin; only self-rotation is animated here. Size
- * is artistic (a real-scale Sun at AU_SCALE would be ~109x Earth's radius
- * and swallow the scene). */
+ * lighting, which is correct — it IS the light source). Lives inside
+ * <HeliocentricFrame>, so its local position is always the heliocentric
+ * origin; only self-rotation is animated here. Size is artistic (a
+ * real-scale Sun at AU_SCALE would be ~109x Earth's radius). */
 function Sun() {
   const spinRef = useRef<Mesh>(null)
   const select = useSelect()
@@ -308,23 +399,26 @@ function Sun() {
     <group
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select({
-          title: 'Sun',
-          subtitle: 'G-type main-sequence star',
-          rows: [
-            { label: 'Mean radius', value: '696,000 km' },
-            { label: 'Surface temp.', value: '~5,500 °C' },
-            { label: 'Distance from Earth', value: '1 AU (149.6M km)' },
-          ],
-        })
+        select(
+          {
+            title: 'Sun',
+            subtitle: 'G-type main-sequence star',
+            rows: [
+              { label: 'Mean radius', value: '696,000 km' },
+              { label: 'Surface temp.', value: '~5,500 °C' },
+              { label: 'Distance from Earth', value: '1 AU (149.6M km)' },
+            ],
+          },
+          spinRef.current,
+        )
       }}
     >
       <mesh ref={spinRef}>
-        <sphereGeometry args={[0.65, 48, 48]} />
+        <sphereGeometry args={[0.55, 48, 48]} />
         <meshBasicMaterial map={surfaceMap} />
       </mesh>
       <mesh scale={1.25}>
-        <sphereGeometry args={[0.65, 32, 32]} />
+        <sphereGeometry args={[0.55, 32, 32]} />
         <shaderMaterial
           vertexShader={SUN_GLOW_VERTEX_SHADER}
           fragmentShader={SUN_GLOW_FRAGMENT_SHADER}
@@ -340,19 +434,20 @@ function Sun() {
 // ---------------------------------------------------------------------------
 // Heliocentric frame — Sun, planets, orbit rings, and real-orbit asteroids
 // all live here with plain heliocentric coordinates. The whole frame is
-// translated by -Earth's live position once per frame, which is
-// equivalent to subtracting Earth's position from every child individually
-// but far cheaper: one transform instead of N.
+// translated by -Earth's live position once per frame: equivalent to
+// subtracting Earth's position from every child individually, but far
+// cheaper (one transform instead of N).
 // ---------------------------------------------------------------------------
 
 function HeliocentricFrame({ children }: { children: React.ReactNode }) {
   const groupRef = useRef<Group>(null)
+  const clockRef = useSimulationClock()
 
-  useFrame((state) => {
+  useFrame(() => {
     if (!groupRef.current) return
-    const jd = simulatedJulianDate(state.clock.elapsedTime)
-    const earthPos = earthHeliocentricPosition(jd)
-    groupRef.current.position.set(-earthPos.x * AU_SCALE, -earthPos.y * AU_SCALE, -earthPos.z * AU_SCALE)
+    const earthPos = earthHeliocentricPosition(clockRef.current)
+    const [x, y, z] = toScenePosition(earthPos)
+    groupRef.current.position.set(-x, -y, -z)
   })
 
   return <group ref={groupRef}>{children}</group>
@@ -364,34 +459,39 @@ type PlanetConfig = {
   texture: string
   radius: number
   rotationPeriodDays: number
+  ring?: boolean
 }
 
 const PLANETS: PlanetConfig[] = [
-  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.06, rotationPeriodDays: 58.646 },
-  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.09, rotationPeriodDays: -243.025 },
-  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.055, rotationPeriodDays: 1.02596 },
+  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.045, rotationPeriodDays: 58.646 },
+  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.065, rotationPeriodDays: -243.025 },
+  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.04, rotationPeriodDays: 1.02596 },
+  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 0.22, rotationPeriodDays: 0.41354 },
+  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 0.19, rotationPeriodDays: 0.4375, ring: true },
+  { key: 'uranus', label: 'Uranus', texture: '/textures/2k_uranus.jpg', radius: 0.12, rotationPeriodDays: -0.71833 },
+  { key: 'neptune', label: 'Neptune', texture: '/textures/2k_neptune.jpg', radius: 0.115, rotationPeriodDays: 0.6713 },
 ]
 
 /** A real neighboring planet, positioned at its own live heliocentric
  * coordinates (the parent <HeliocentricFrame> already accounts for Earth's
- * offset). Rotation period is real too (Venus rotates backward: retrograde
- * -243 days), scaled by the same simulated-time acceleration as everything
- * else in the scene. */
+ * offset; distance compression applies past Mars — see toScenePosition).
+ * Rotation period is real too (Venus rotates backward: retrograde -243
+ * days), scaled by the same simulated-time acceleration as everything else. */
 function Planet({ config }: { config: PlanetConfig }) {
   const groupRef = useRef<Group>(null)
   const spinRef = useRef<Mesh>(null)
   const map = useTexture(config.texture)
   const elements = PLANETARY_ELEMENTS[config.key]
   const select = useSelect()
-  const { clock } = useThree()
+  const clockRef = useSimulationClock()
 
-  useFrame((state) => {
+  useFrame(() => {
     if (!groupRef.current) return
-    const jd = simulatedJulianDate(state.clock.elapsedTime)
-    const planetPos = heliocentricPosition(elements, jd)
-    groupRef.current.position.set(planetPos.x * AU_SCALE, planetPos.y * AU_SCALE, planetPos.z * AU_SCALE)
+    const planetPos = heliocentricPosition(elements, clockRef.current)
+    const [x, y, z] = toScenePosition(planetPos)
+    groupRef.current.position.set(x, y, z)
     if (spinRef.current) {
-      const simulatedDaysElapsed = jd - BASE_JULIAN_DATE
+      const simulatedDaysElapsed = clockRef.current - BASE_JULIAN_DATE
       spinRef.current.rotation.y = (simulatedDaysElapsed / config.rotationPeriodDays) * Math.PI * 2
     }
   })
@@ -403,41 +503,53 @@ function Planet({ config }: { config: PlanetConfig }) {
       ref={groupRef}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        const jd = simulatedJulianDate(clock.getElapsedTime())
-        const relative = subtract(heliocentricPosition(elements, jd), earthHeliocentricPosition(jd))
+        const relative = subtract(
+          heliocentricPosition(elements, clockRef.current),
+          earthHeliocentricPosition(clockRef.current),
+        )
         const distanceAu = Math.hypot(relative.x, relative.y, relative.z)
-        select({
-          title: config.label,
-          subtitle: 'Planet',
-          rows: [
-            { label: 'Orbital period', value: `${periodDays.toFixed(1)} days` },
-            { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(3)} AU` },
-            {
-              label: 'Rotation period',
-              value: `${Math.abs(config.rotationPeriodDays).toFixed(1)} days${config.rotationPeriodDays < 0 ? ' (retrograde)' : ''}`,
-            },
-            {
-              label: 'Distance from Earth',
-              value: `${distanceAu.toFixed(3)} AU / ${(distanceAu * AU_IN_KM / 1_000_000).toFixed(1)}M km`,
-            },
-          ],
-        })
+        select(
+          {
+            title: config.label,
+            subtitle: 'Planet',
+            rows: [
+              { label: 'Orbital period', value: `${periodDays.toFixed(1)} days` },
+              { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(3)} AU` },
+              {
+                label: 'Rotation period',
+                value: `${Math.abs(config.rotationPeriodDays).toFixed(2)} days${config.rotationPeriodDays < 0 ? ' (retrograde)' : ''}`,
+              },
+              {
+                label: 'Distance from Earth',
+                value: `${distanceAu.toFixed(2)} AU / ${((distanceAu * AU_IN_KM) / 1_000_000).toFixed(0)}M km`,
+              },
+            ],
+          },
+          spinRef.current,
+        )
       }}
     >
       <mesh ref={spinRef}>
         <sphereGeometry args={[config.radius, 24, 24]} />
         <meshStandardMaterial map={map} roughness={0.9} />
       </mesh>
+      {config.ring ? (
+        <mesh rotation={[Math.PI / 2.3, 0, 0]}>
+          <ringGeometry args={[config.radius * 1.4, config.radius * 2.3, 48]} />
+          <meshBasicMaterial color="#c9b896" transparent opacity={0.55} side={BackSide} />
+        </mesh>
+      ) : null}
     </group>
   )
 }
 
-/** Static ellipse traced from the planet's real orbital elements — since the
- * elements themselves don't change, this needs no per-frame recompute; the
- * parent <HeliocentricFrame>'s single transform keeps it Earth-relative. */
+/** Static ellipse traced from the planet's real orbital elements — the
+ * elements don't change, so this needs no per-frame recompute; the parent
+ * <HeliocentricFrame>'s single transform keeps it Earth-relative. Points go
+ * through the same distance compression as the planet markers. */
 function OrbitRing({ elements, color }: { elements: OrbitalElements; color: string }) {
   const points = useMemo(
-    () => orbitPathPoints(elements, 128).map((p) => [p.x * AU_SCALE, p.y * AU_SCALE, p.z * AU_SCALE] as const),
+    () => orbitPathPoints(elements, 160).map((p) => toScenePosition(p)),
     [elements],
   )
   return <Line points={points} color={color} transparent opacity={0.25} lineWidth={1} />
@@ -505,31 +617,50 @@ function neoInfo(neo: NearEarthObject): SelectedInfo {
   }
 }
 
+/** Larger invisible hit-target sitting on top of the small visible marker —
+ * asteroids render at true relative scale (often a few pixels), which was
+ * unclickable on a touchscreen. The tap target is generously sized;
+ * the visible sphere keeps its accurate size. */
+function ClickTarget({ onClick }: { onClick: (event: ThreeEvent<MouseEvent>) => void }) {
+  return (
+    <mesh onClick={onClick}>
+      <sphereGeometry args={[0.22, 8, 8]} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+    </mesh>
+  )
+}
+
 function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
-  const meshRef = useRef<Mesh>(null)
+  const groupRef = useRef<Group>(null)
   const select = useSelect()
+  const clockRef = useSimulationClock()
   const radius = Math.min(0.12, Math.max(0.02, neo.estimatedDiameterKm * 0.05))
   const color = neo.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
   const orbit = neo.orbit as OrbitalElements
 
-  useFrame((state) => {
-    if (!meshRef.current) return
-    const jd = simulatedJulianDate(state.clock.elapsedTime)
-    const pos = heliocentricPosition(orbit, jd)
-    meshRef.current.position.set(pos.x * AU_SCALE, pos.y * AU_SCALE, pos.z * AU_SCALE)
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = heliocentricPosition(orbit, clockRef.current)
+    const [x, y, z] = toScenePosition(pos)
+    groupRef.current.position.set(x, y, z)
   })
 
+  const handleClick = useCallback(
+    (event: ThreeEvent<MouseEvent>) => {
+      event.stopPropagation()
+      select(neoInfo(neo), groupRef.current)
+    },
+    [neo, select],
+  )
+
   return (
-    <mesh
-      ref={meshRef}
-      onClick={(event: ThreeEvent<MouseEvent>) => {
-        event.stopPropagation()
-        select(neoInfo(neo))
-      }}
-    >
-      <sphereGeometry args={[radius, 12, 12]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
-    </mesh>
+    <group ref={groupRef}>
+      <mesh>
+        <sphereGeometry args={[radius, 12, 12]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+    </group>
   )
 }
 
@@ -537,33 +668,38 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
  * <HeliocentricFrame>, since without real elements there's no heliocentric
  * position to put there. */
 function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number }) {
-  const meshRef = useRef<Mesh>(null)
+  const groupRef = useRef<Group>(null)
   const select = useSelect()
   const radius = Math.min(0.12, Math.max(0.02, neo.estimatedDiameterKm * 0.05))
   const color = neo.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
   const orbit = useMemo(() => fallbackOrbit(neo, index), [neo, index])
 
   useFrame((state) => {
-    if (!meshRef.current) return
+    if (!groupRef.current) return
     const theta = orbit.theta0 + state.clock.elapsedTime * orbit.angularSpeed
-    meshRef.current.position.set(
+    groupRef.current.position.set(
       orbit.radius * Math.cos(orbit.phi) * Math.cos(theta),
       orbit.radius * Math.sin(orbit.phi),
       orbit.radius * Math.cos(orbit.phi) * Math.sin(theta),
     )
   })
 
+  const handleClick = useCallback(
+    (event: ThreeEvent<MouseEvent>) => {
+      event.stopPropagation()
+      select(neoInfo(neo), groupRef.current)
+    },
+    [neo, select],
+  )
+
   return (
-    <mesh
-      ref={meshRef}
-      onClick={(event: ThreeEvent<MouseEvent>) => {
-        event.stopPropagation()
-        select(neoInfo(neo))
-      }}
-    >
-      <sphereGeometry args={[radius, 12, 12]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
-    </mesh>
+    <group ref={groupRef}>
+      <mesh>
+        <sphereGeometry args={[radius, 12, 12]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+    </group>
   )
 }
 
@@ -591,7 +727,11 @@ function FallbackNeoField({ objects }: { objects: NearEarthObject[] }) {
 // Space station (ISS) — Earth-relative, not heliocentric
 // ---------------------------------------------------------------------------
 
-/** Torus silhouette reads as a station's ring/truss structure at marker scale. */
+/** Simple procedural silhouette (central truss + solar-panel wings) instead
+ * of a plain ring — reads as "a station," not just a generic marker. NASA's
+ * official ISS model exists (science.nasa.gov) but is a 42MB glTF, too heavy
+ * to load into a scene meant to run on a phone; a real lightweight model is
+ * a good follow-up if that trade-off is worth it later. */
 function StationMarker({
   position,
   fix,
@@ -599,19 +739,17 @@ function StationMarker({
   position: [number, number, number]
   fix: IssPosition
 }) {
-  const ref = useRef<Mesh>(null)
+  const ref = useRef<Group>(null)
   const select = useSelect()
   useFrame((_, delta) => {
-    if (ref.current) ref.current.rotation.z += delta * 0.3
+    if (ref.current) ref.current.rotation.y += delta * 0.4
   })
 
-  return (
-    <mesh
-      ref={ref}
-      position={position}
-      onClick={(event: ThreeEvent<MouseEvent>) => {
-        event.stopPropagation()
-        select({
+  const handleClick = useCallback(
+    (event: ThreeEvent<MouseEvent>) => {
+      event.stopPropagation()
+      select(
+        {
           title: 'ISS',
           subtitle: 'International Space Station — live',
           rows: [
@@ -620,12 +758,29 @@ function StationMarker({
             { label: 'Latitude', value: fix.latitude.toFixed(2) },
             { label: 'Longitude', value: fix.longitude.toFixed(2) },
           ],
-        })
-      }}
-    >
-      <torusGeometry args={[0.05, 0.012, 8, 16]} />
-      <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.5} />
-    </mesh>
+        },
+        ref.current,
+      )
+    },
+    [fix, select],
+  )
+
+  return (
+    <group ref={ref} position={position}>
+      <mesh rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.008, 0.008, 0.09, 8]} />
+        <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.6} />
+      </mesh>
+      <mesh position={[0.055, 0, 0]}>
+        <boxGeometry args={[0.05, 0.018, 0.002]} />
+        <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.8} />
+      </mesh>
+      <mesh position={[-0.055, 0, 0]}>
+        <boxGeometry args={[0.05, 0.018, 0.002]} />
+        <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.8} />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+    </group>
   )
 }
 
@@ -654,12 +809,13 @@ function IssTracker({ onFix }: { onFix: () => void }) {
   }, [onFix])
 
   if (!fix) return null
-  const position = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm)
+  const [x, y, z] = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm)
+  const position: [number, number, number] = [x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS]
   return <StationMarker position={position} fix={fix} />
 }
 
 // ---------------------------------------------------------------------------
-// Legend + scene root
+// HUD: legend + time-speed control
 // ---------------------------------------------------------------------------
 
 function TypeLegend({
@@ -694,7 +850,37 @@ function TypeLegend({
           {row.label}
         </p>
       ))}
-      <p className="text-white/40">Tap an object for details</p>
+      <p className="text-white/40">Tap an object for details &amp; focus</p>
+    </div>
+  )
+}
+
+type SpeedMode = 'realtime' | 'accelerated' | 'fast'
+
+const SPEED_MODES: Record<SpeedMode, { label: string; daysPerSecond: number }> = {
+  realtime: { label: 'Real-time', daysPerSecond: REALTIME_DAYS_PER_SECOND },
+  accelerated: { label: '8 d/s', daysPerSecond: ACCELERATED_DAYS_PER_SECOND },
+  fast: { label: '45 d/s', daysPerSecond: FAST_DAYS_PER_SECOND },
+}
+
+function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
+  const [mode, setMode] = useState<SpeedMode>('accelerated')
+
+  return (
+    <div className="pointer-events-auto absolute bottom-4 right-4 flex gap-1 rounded border border-white/15 bg-black/60 p-1 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 backdrop-blur-sm">
+      {(Object.keys(SPEED_MODES) as SpeedMode[]).map((key) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => {
+            setMode(key)
+            speedRef.current = SPEED_MODES[key].daysPerSecond
+          }}
+          className={`min-h-8 px-2 ${mode === key ? 'bg-white/20 text-white' : 'hover:bg-white/10'}`}
+        >
+          {SPEED_MODES[key].label}
+        </button>
+      ))}
     </div>
   )
 }
@@ -703,6 +889,12 @@ export function EarthScene() {
   const [objects, setObjects] = useState<NearEarthObject[]>([])
   const [issTracked, setIssTracked] = useState(false)
   const [selected, setSelected] = useState<SelectedInfo | null>(null)
+  const [focusTarget, setFocusTarget] = useState<Object3D | null>(null)
+  // A plain mutable box, not a React ref — the time-speed toggle mutates it
+  // directly and useFrame callbacks read it every frame; it never drives
+  // this component's own render output.
+  const speedBox = useMemo<SpeedRef>(() => ({ current: ACCELERATED_DAYS_PER_SECOND }), [])
+  const controlsRef = useRef<OrbitControlsImpl>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -719,7 +911,10 @@ export function EarthScene() {
     }
   }, [])
 
-  const select = useCallback((info: SelectedInfo | null) => setSelected(info), [])
+  const select = useCallback((info: SelectedInfo, target?: Object3D | null) => {
+    setSelected(info)
+    setFocusTarget(target ?? null)
+  }, [])
 
   const trackedObjects = objects.filter((neo) => neo.orbit !== null)
   const fallbackObjects = objects.filter((neo) => neo.orbit === null)
@@ -728,27 +923,41 @@ export function EarthScene() {
     <SelectionContext.Provider value={select}>
       <div className="relative h-full w-full">
         <Canvas
-          camera={{ position: [0, 0, 3], fov: 45 }}
+          camera={{ position: [0, 0, 1.8], fov: 45, near: 0.01, far: 200 }}
           gl={{ antialias: true, powerPreference: 'high-performance' }}
           dpr={[1, 2]}
-          onPointerMissed={() => setSelected(null)}
+          onPointerMissed={() => {
+            setSelected(null)
+            setFocusTarget(null)
+          }}
         >
-          {/* SunLight is the only light in the scene — no ambient fill — so
-              unlit sides genuinely go dark, the way real sunlight works. */}
-          <SunLight />
-          <Earth />
-          <HeliocentricFrame>
-            <Sun />
-            <InnerSolarSystem />
-            <HelioNeoField objects={trackedObjects} />
-          </HeliocentricFrame>
-          <FallbackNeoField objects={fallbackObjects} />
-          <IssTracker onFix={() => setIssTracked(true)} />
+          <SimulationClockProvider speedRef={speedBox}>
+            {/* SunLight is the only light in the scene — no ambient fill. */}
+            <SunLight />
+            <Earth />
+            <HeliocentricFrame>
+              <Sun />
+              <InnerSolarSystem />
+              <HelioNeoField objects={trackedObjects} />
+            </HeliocentricFrame>
+            <FallbackNeoField objects={fallbackObjects} />
+            <IssTracker onFix={() => setIssTracked(true)} />
+            <CameraFocus target={focusTarget} controlsRef={controlsRef} />
+          </SimulationClockProvider>
           <Stars radius={80} depth={40} count={3000} factor={3} fade />
-          <OrbitControls enablePan={false} minDistance={1.5} maxDistance={20} />
+          <OrbitControls ref={controlsRef} enablePan={false} minDistance={0.7} maxDistance={60} />
         </Canvas>
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
-        {selected ? <InfoPanel info={selected} onClose={() => setSelected(null)} /> : null}
+        <TimeControl speedRef={speedBox} />
+        {selected ? (
+          <InfoPanel
+            info={selected}
+            onClose={() => {
+              setSelected(null)
+              setFocusTarget(null)
+            }}
+          />
+        ) : null}
       </div>
     </SelectionContext.Provider>
   )
