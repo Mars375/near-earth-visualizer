@@ -31,6 +31,7 @@ import {
   subtract,
   unixMsToJulianDate,
   type OrbitalElements,
+  type PlanetKey,
 } from '@/lib/orbitalMechanics'
 import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
 
@@ -454,7 +455,7 @@ function HeliocentricFrame({ children }: { children: React.ReactNode }) {
 }
 
 type PlanetConfig = {
-  key: string
+  key: PlanetKey
   label: string
   texture: string
   radius: number

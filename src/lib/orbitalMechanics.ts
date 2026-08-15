@@ -80,7 +80,21 @@ export function heliocentricPosition(elements: OrbitalElements, julianDate: numb
  * of degrees around the present era — plenty for this visualization, and
  * real published numbers rather than an invented approximation.
  */
-export const PLANETARY_ELEMENTS: Record<string, OrbitalElements> = {
+export type PlanetKey =
+  | 'mercury'
+  | 'venus'
+  | 'earth'
+  | 'mars'
+  | 'jupiter'
+  | 'saturn'
+  | 'uranus'
+  | 'neptune'
+
+/** Record<PlanetKey, ...> (not Record<string, ...>) deliberately: a missing
+ * entry here previously produced silent NaN positions (spreading `undefined`
+ * elements into an object literal is a no-op in JS, not a throw) instead of
+ * a compile error. This type makes a missing planet a build failure. */
+export const PLANETARY_ELEMENTS: Record<PlanetKey, OrbitalElements> = {
   mercury: {
     semiMajorAxisAu: 0.38709927,
     eccentricity: 0.20563593,
@@ -119,6 +133,46 @@ export const PLANETARY_ELEMENTS: Record<string, OrbitalElements> = {
     perihelionArgumentDeg: 286.4968315,
     meanAnomalyDeg: 19.39019754,
     meanMotionDegPerDay: 0.52402068,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  jupiter: {
+    semiMajorAxisAu: 5.20288700,
+    eccentricity: 0.04838624,
+    inclinationDeg: 1.30439695,
+    ascendingNodeDeg: 100.47390909,
+    perihelionArgumentDeg: 274.25457074,
+    meanAnomalyDeg: 19.66796068,
+    meanMotionDegPerDay: 0.08308910,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  saturn: {
+    semiMajorAxisAu: 9.53667594,
+    eccentricity: 0.05386179,
+    inclinationDeg: 2.48599187,
+    ascendingNodeDeg: 113.66242448,
+    perihelionArgumentDeg: 338.93645383,
+    meanAnomalyDeg: 317.35536592,
+    meanMotionDegPerDay: 0.03346821,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  uranus: {
+    semiMajorAxisAu: 19.18916464,
+    eccentricity: 0.04725744,
+    inclinationDeg: 0.77263783,
+    ascendingNodeDeg: 74.01692503,
+    perihelionArgumentDeg: 96.93735127,
+    meanAnomalyDeg: 142.28382821,
+    meanMotionDegPerDay: 0.01173245,
+    epochJulianDate: J2000_JULIAN_DATE,
+  },
+  neptune: {
+    semiMajorAxisAu: 30.06992276,
+    eccentricity: 0.00859048,
+    inclinationDeg: 1.77004347,
+    ascendingNodeDeg: 131.78422574,
+    perihelionArgumentDeg: 273.18053653,
+    meanAnomalyDeg: 259.91520804,
+    meanMotionDegPerDay: 0.00598160,
     epochJulianDate: J2000_JULIAN_DATE,
   },
 }
