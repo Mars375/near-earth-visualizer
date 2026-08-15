@@ -1,14 +1,30 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
-import { OrbitControls, Stars, useTexture } from '@react-three/drei'
-import { AdditiveBlending, BackSide, type DirectionalLight, type Mesh, type ShaderMaterial } from 'three'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
+import { Line, OrbitControls, Stars, useTexture } from '@react-three/drei'
+import {
+  AdditiveBlending,
+  BackSide,
+  type DirectionalLight,
+  type Group,
+  type Mesh,
+  type ShaderMaterial,
+} from 'three'
 import type { NearEarthObject } from '@/lib/nasa'
 import {
   PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
+  orbitPathPoints,
   subtract,
   unixMsToJulianDate,
   type OrbitalElements,
@@ -29,6 +45,8 @@ const TYPE_SATELLITE = '#3987e5' // blue
 const TYPE_SHUTTLE = '#d95926' // orange
 const TYPE_STATION = '#199e70' // aqua
 
+const AU_IN_KM = 149_597_870.7
+
 // Real-time anchor for the orbital simulation clock: Julian Date at module
 // load, advanced by simulated days per real second so orbital motion (whose
 // real periods are months to years) is visible within a viewing session
@@ -48,6 +66,52 @@ function liveSunDirection(elapsedSeconds: number): [number, number, number] {
   const length = Math.hypot(earthPos.x, earthPos.y, earthPos.z) || 1
   return [-earthPos.x / length, -earthPos.y / length, -earthPos.z / length]
 }
+
+// ---------------------------------------------------------------------------
+// Selection / info panel
+// ---------------------------------------------------------------------------
+
+type InfoRow = { label: string; value: string }
+type SelectedInfo = { title: string; subtitle: string; rows: InfoRow[] }
+
+const SelectionContext = createContext<(info: SelectedInfo | null) => void>(() => {})
+
+function useSelect() {
+  return useContext(SelectionContext)
+}
+
+function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
+  return (
+    <div className="pointer-events-auto absolute right-4 top-16 w-64 rounded border border-white/15 bg-black/75 p-3 font-mono text-xs text-white/85 backdrop-blur-sm">
+      <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
+          <p className="text-white/50">{info.subtitle}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close object details"
+          className="min-h-6 min-w-6 border border-white/20 px-1.5 text-white/70 hover:bg-white/10"
+        >
+          ×
+        </button>
+      </div>
+      <dl className="mt-2 space-y-1">
+        {info.rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-3">
+            <dt className="text-white/50">{row.label}</dt>
+            <dd className="tabular-nums text-white">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Earth
+// ---------------------------------------------------------------------------
 
 const EARTH_DAY_NIGHT_VERTEX_SHADER = `
   varying vec3 vNormal;
@@ -126,11 +190,9 @@ function Atmosphere() {
 function Earth() {
   const meshRef = useRef<Mesh>(null)
   const materialRef = useRef<ShaderMaterial>(null)
+  const select = useSelect()
   // Real daily satellite mosaic (NASA GIBS) instead of a static generic map.
-  const [dayMap, nightMap] = useTexture([
-    '/api/earth-imagery',
-    '/textures/2k_earth_nightmap.jpg',
-  ])
+  const [dayMap, nightMap] = useTexture(['/api/earth-imagery', '/textures/2k_earth_nightmap.jpg'])
 
   const uniforms = useMemo(
     () => ({
@@ -162,7 +224,21 @@ function Earth() {
 
   return (
     <group>
-      <mesh ref={meshRef}>
+      <mesh
+        ref={meshRef}
+        onClick={(event: ThreeEvent<MouseEvent>) => {
+          event.stopPropagation()
+          select({
+            title: 'Earth',
+            subtitle: 'Home planet — scene reference point',
+            rows: [
+              { label: 'Mean radius', value: '6,371 km' },
+              { label: 'Orbital period', value: '365.25 days' },
+              { label: 'Rotation period', value: '23h 56m' },
+            ],
+          })
+        }}
+      >
         <sphereGeometry args={[1, 64, 64]} />
         <shaderMaterial
           ref={materialRef}
@@ -177,9 +253,14 @@ function Earth() {
   )
 }
 
-/** Scene light standing in for actual sunlight — position tracks the same
- * live direction as the Earth shader's terminator, so the two can never
- * drift apart the way a fixed light direction would. */
+// ---------------------------------------------------------------------------
+// Sun + light — the only light source in the scene
+// ---------------------------------------------------------------------------
+
+/** Tracks the same live direction as the Earth shader's terminator, so the
+ * two can never drift apart the way a fixed light direction would. This is
+ * the ONLY light in the scene — no ambient fill — so unlit sides of
+ * planets/moons go genuinely dark, the way sunlight actually works. */
 function SunLight() {
   const lightRef = useRef<DirectionalLight>(null)
 
@@ -189,7 +270,7 @@ function SunLight() {
     lightRef.current.position.set(x * 5, y * 5, z * 5)
   })
 
-  return <directionalLight ref={lightRef} intensity={1.6} />
+  return <directionalLight ref={lightRef} intensity={2.2} />
 }
 
 const SUN_GLOW_VERTEX_SHADER = `
@@ -208,30 +289,37 @@ const SUN_GLOW_FRAGMENT_SHADER = `
   }
 `
 
-/** The Sun: real texture, positioned from Earth's real (live, simulated)
- * heliocentric position — not a static prop. Size is artistic (a
- * real-scale Sun at AU_SCALE would be ~109x Earth's radius and swallow the
- * scene); distance is the real relative scale, same AU_SCALE as the
- * planets and asteroid orbits. */
+/** The Sun: real texture, self-lit (meshBasicMaterial ignores scene
+ * lighting, which is correct — the Sun is the light source, not something
+ * lit by it). Lives inside <HeliocentricFrame>, so its local position is
+ * always the heliocentric origin; only self-rotation is animated here. Size
+ * is artistic (a real-scale Sun at AU_SCALE would be ~109x Earth's radius
+ * and swallow the scene). */
 function Sun() {
-  const groupRef = useRef<Mesh>(null)
+  const spinRef = useRef<Mesh>(null)
+  const select = useSelect()
   const surfaceMap = useTexture('/textures/2k_sun.jpg')
 
-  useFrame((state, delta) => {
-    if (!groupRef.current) return
-    const jd = simulatedJulianDate(state.clock.elapsedTime)
-    const earthPos = earthHeliocentricPosition(jd)
-    groupRef.current.position.set(
-      -earthPos.x * AU_SCALE,
-      -earthPos.y * AU_SCALE,
-      -earthPos.z * AU_SCALE,
-    )
-    groupRef.current.rotation.y += delta * 0.03
+  useFrame((_, delta) => {
+    if (spinRef.current) spinRef.current.rotation.y += delta * 0.03
   })
 
   return (
-    <group ref={groupRef}>
-      <mesh>
+    <group
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        select({
+          title: 'Sun',
+          subtitle: 'G-type main-sequence star',
+          rows: [
+            { label: 'Mean radius', value: '696,000 km' },
+            { label: 'Surface temp.', value: '~5,500 °C' },
+            { label: 'Distance from Earth', value: '1 AU (149.6M km)' },
+          ],
+        })
+      }}
+    >
+      <mesh ref={spinRef}>
         <sphereGeometry args={[0.65, 48, 48]} />
         <meshBasicMaterial map={surfaceMap} />
       </mesh>
@@ -249,48 +337,93 @@ function Sun() {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Heliocentric frame — Sun, planets, orbit rings, and real-orbit asteroids
+// all live here with plain heliocentric coordinates. The whole frame is
+// translated by -Earth's live position once per frame, which is
+// equivalent to subtracting Earth's position from every child individually
+// but far cheaper: one transform instead of N.
+// ---------------------------------------------------------------------------
+
+function HeliocentricFrame({ children }: { children: React.ReactNode }) {
+  const groupRef = useRef<Group>(null)
+
+  useFrame((state) => {
+    if (!groupRef.current) return
+    const jd = simulatedJulianDate(state.clock.elapsedTime)
+    const earthPos = earthHeliocentricPosition(jd)
+    groupRef.current.position.set(-earthPos.x * AU_SCALE, -earthPos.y * AU_SCALE, -earthPos.z * AU_SCALE)
+  })
+
+  return <group ref={groupRef}>{children}</group>
+}
+
 type PlanetConfig = {
   key: string
+  label: string
   texture: string
   radius: number
   rotationPeriodDays: number
 }
 
 const PLANETS: PlanetConfig[] = [
-  { key: 'mercury', texture: '/textures/2k_mercury.jpg', radius: 0.06, rotationPeriodDays: 58.646 },
-  { key: 'venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.09, rotationPeriodDays: -243.025 },
-  { key: 'mars', texture: '/textures/2k_mars.jpg', radius: 0.055, rotationPeriodDays: 1.02596 },
+  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.06, rotationPeriodDays: 58.646 },
+  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.09, rotationPeriodDays: -243.025 },
+  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.055, rotationPeriodDays: 1.02596 },
 ]
 
-/** A real neighboring planet, Earth-relative, on its real heliocentric
- * orbit — same technique as the Sun and the asteroids. Rotation period is
- * real too (Venus rotates backward: retrograde -243 days), scaled by the
- * same simulated-time acceleration as everything else in the scene. */
+/** A real neighboring planet, positioned at its own live heliocentric
+ * coordinates (the parent <HeliocentricFrame> already accounts for Earth's
+ * offset). Rotation period is real too (Venus rotates backward: retrograde
+ * -243 days), scaled by the same simulated-time acceleration as everything
+ * else in the scene. */
 function Planet({ config }: { config: PlanetConfig }) {
-  const groupRef = useRef<Mesh>(null)
+  const groupRef = useRef<Group>(null)
   const spinRef = useRef<Mesh>(null)
   const map = useTexture(config.texture)
   const elements = PLANETARY_ELEMENTS[config.key]
+  const select = useSelect()
+  const { clock } = useThree()
 
   useFrame((state) => {
     if (!groupRef.current) return
     const jd = simulatedJulianDate(state.clock.elapsedTime)
     const planetPos = heliocentricPosition(elements, jd)
-    const earthPos = earthHeliocentricPosition(jd)
-    const relative = subtract(planetPos, earthPos)
-    groupRef.current.position.set(
-      relative.x * AU_SCALE,
-      relative.y * AU_SCALE,
-      relative.z * AU_SCALE,
-    )
+    groupRef.current.position.set(planetPos.x * AU_SCALE, planetPos.y * AU_SCALE, planetPos.z * AU_SCALE)
     if (spinRef.current) {
       const simulatedDaysElapsed = jd - BASE_JULIAN_DATE
       spinRef.current.rotation.y = (simulatedDaysElapsed / config.rotationPeriodDays) * Math.PI * 2
     }
   })
 
+  const periodDays = 360 / elements.meanMotionDegPerDay
+
   return (
-    <group ref={groupRef}>
+    <group
+      ref={groupRef}
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        const jd = simulatedJulianDate(clock.getElapsedTime())
+        const relative = subtract(heliocentricPosition(elements, jd), earthHeliocentricPosition(jd))
+        const distanceAu = Math.hypot(relative.x, relative.y, relative.z)
+        select({
+          title: config.label,
+          subtitle: 'Planet',
+          rows: [
+            { label: 'Orbital period', value: `${periodDays.toFixed(1)} days` },
+            { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(3)} AU` },
+            {
+              label: 'Rotation period',
+              value: `${Math.abs(config.rotationPeriodDays).toFixed(1)} days${config.rotationPeriodDays < 0 ? ' (retrograde)' : ''}`,
+            },
+            {
+              label: 'Distance from Earth',
+              value: `${distanceAu.toFixed(3)} AU / ${(distanceAu * AU_IN_KM / 1_000_000).toFixed(1)}M km`,
+            },
+          ],
+        })
+      }}
+    >
       <mesh ref={spinRef}>
         <sphereGeometry args={[config.radius, 24, 24]} />
         <meshStandardMaterial map={map} roughness={0.9} />
@@ -299,15 +432,34 @@ function Planet({ config }: { config: PlanetConfig }) {
   )
 }
 
+/** Static ellipse traced from the planet's real orbital elements — since the
+ * elements themselves don't change, this needs no per-frame recompute; the
+ * parent <HeliocentricFrame>'s single transform keeps it Earth-relative. */
+function OrbitRing({ elements, color }: { elements: OrbitalElements; color: string }) {
+  const points = useMemo(
+    () => orbitPathPoints(elements, 128).map((p) => [p.x * AU_SCALE, p.y * AU_SCALE, p.z * AU_SCALE] as const),
+    [elements],
+  )
+  return <Line points={points} color={color} transparent opacity={0.25} lineWidth={1} />
+}
+
 function InnerSolarSystem() {
   return (
     <>
+      <OrbitRing elements={PLANETARY_ELEMENTS.earth} color="#3987e5" />
+      {PLANETS.map((config) => (
+        <OrbitRing key={`ring-${config.key}`} elements={PLANETARY_ELEMENTS[config.key]} color="#5a5a52" />
+      ))}
       {PLANETS.map((config) => (
         <Planet key={config.key} config={config} />
       ))}
     </>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Near-Earth objects
+// ---------------------------------------------------------------------------
 
 function hashId(id: string): number {
   let hash = 0
@@ -327,81 +479,188 @@ function fallbackOrbit(neo: NearEarthObject, index: number): FallbackOrbit {
   const hash = hashId(neo.id)
   const theta0 = ((hash % 360) / 360) * Math.PI * 2
   const phi = (((hash >> 8) % 180) / 180) * Math.PI - Math.PI / 2
-  const radius = Math.min(
-    6,
-    1.8 + Math.log10(Math.max(neo.missDistanceKm, 1e5)) * 0.35 + index * 0.01,
-  )
+  const radius = Math.min(6, 1.8 + Math.log10(Math.max(neo.missDistanceKm, 1e5)) * 0.35 + index * 0.01)
   const angularSpeed = Math.min(0.18, 0.02 + neo.relativeVelocityKmS * 0.004)
   return { radius, phi, theta0, angularSpeed }
 }
 
-function NeoMarker({ neo, index }: { neo: NearEarthObject; index: number }) {
+function neoInfo(neo: NearEarthObject): SelectedInfo {
+  const rows: InfoRow[] = [
+    { label: 'Diameter (est.)', value: `${(neo.estimatedDiameterKm * 1000).toFixed(0)} m` },
+    { label: 'Hazardous', value: neo.isPotentiallyHazardous ? 'Yes' : 'No' },
+    { label: 'Close approach', value: neo.closeApproachDate },
+    { label: 'Miss distance', value: `${(neo.missDistanceKm / 1000).toFixed(0)}k km` },
+    { label: 'Relative speed', value: `${neo.relativeVelocityKmS.toFixed(1)} km/s` },
+  ]
+  if (neo.orbit) {
+    rows.push(
+      { label: 'Semi-major axis', value: `${neo.orbit.semiMajorAxisAu.toFixed(3)} AU` },
+      { label: 'Orbital period', value: `${(360 / neo.orbit.meanMotionDegPerDay).toFixed(0)} days` },
+    )
+  }
+  return {
+    title: neo.name,
+    subtitle: neo.orbit ? 'Near-Earth asteroid — real orbit' : 'Near-Earth asteroid — approximated',
+    rows,
+  }
+}
+
+function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
   const meshRef = useRef<Mesh>(null)
-  // Clamp so a 30m rock and a 1km rock both stay legible on screen.
+  const select = useSelect()
   const radius = Math.min(0.12, Math.max(0.02, neo.estimatedDiameterKm * 0.05))
   const color = neo.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
-  const orbit = neo.orbit
-  const fallback = useMemo(() => fallbackOrbit(neo, index), [neo, index])
+  const orbit = neo.orbit as OrbitalElements
 
   useFrame((state) => {
     if (!meshRef.current) return
-
-    if (orbit) {
-      const jd = simulatedJulianDate(state.clock.elapsedTime)
-      const asteroidPos = heliocentricPosition(orbit as OrbitalElements, jd)
-      const earthPos = earthHeliocentricPosition(jd)
-      const relative = subtract(asteroidPos, earthPos)
-      meshRef.current.position.set(
-        relative.x * AU_SCALE,
-        relative.y * AU_SCALE,
-        relative.z * AU_SCALE,
-      )
-    } else {
-      const theta = fallback.theta0 + state.clock.elapsedTime * fallback.angularSpeed
-      meshRef.current.position.set(
-        fallback.radius * Math.cos(fallback.phi) * Math.cos(theta),
-        fallback.radius * Math.sin(fallback.phi),
-        fallback.radius * Math.cos(fallback.phi) * Math.sin(theta),
-      )
-    }
+    const jd = simulatedJulianDate(state.clock.elapsedTime)
+    const pos = heliocentricPosition(orbit, jd)
+    meshRef.current.position.set(pos.x * AU_SCALE, pos.y * AU_SCALE, pos.z * AU_SCALE)
   })
 
   return (
-    <mesh ref={meshRef}>
+    <mesh
+      ref={meshRef}
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        select(neoInfo(neo))
+      }}
+    >
       <sphereGeometry args={[radius, 12, 12]} />
       <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
     </mesh>
   )
 }
 
-function NeoField({ objects }: { objects: NearEarthObject[] }) {
+/** Earth-relative schematic placement — deliberately NOT inside
+ * <HeliocentricFrame>, since without real elements there's no heliocentric
+ * position to put there. */
+function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number }) {
+  const meshRef = useRef<Mesh>(null)
+  const select = useSelect()
+  const radius = Math.min(0.12, Math.max(0.02, neo.estimatedDiameterKm * 0.05))
+  const color = neo.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
+  const orbit = useMemo(() => fallbackOrbit(neo, index), [neo, index])
+
+  useFrame((state) => {
+    if (!meshRef.current) return
+    const theta = orbit.theta0 + state.clock.elapsedTime * orbit.angularSpeed
+    meshRef.current.position.set(
+      orbit.radius * Math.cos(orbit.phi) * Math.cos(theta),
+      orbit.radius * Math.sin(orbit.phi),
+      orbit.radius * Math.cos(orbit.phi) * Math.sin(theta),
+    )
+  })
+
   return (
-    <group>
-      {objects.map((neo, index) => (
-        <NeoMarker key={neo.id} neo={neo} index={index} />
-      ))}
-    </group>
+    <mesh
+      ref={meshRef}
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        select(neoInfo(neo))
+      }}
+    >
+      <sphereGeometry args={[radius, 12, 12]} />
+      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
+    </mesh>
   )
 }
 
+function HelioNeoField({ objects }: { objects: NearEarthObject[] }) {
+  return (
+    <>
+      {objects.map((neo) => (
+        <HelioNeoMarker key={neo.id} neo={neo} />
+      ))}
+    </>
+  )
+}
+
+function FallbackNeoField({ objects }: { objects: NearEarthObject[] }) {
+  return (
+    <>
+      {objects.map((neo, index) => (
+        <FallbackNeoMarker key={neo.id} neo={neo} index={index} />
+      ))}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Space station (ISS) — Earth-relative, not heliocentric
+// ---------------------------------------------------------------------------
+
 /** Torus silhouette reads as a station's ring/truss structure at marker scale. */
-function StationMarker({ position }: { position: [number, number, number] }) {
+function StationMarker({
+  position,
+  fix,
+}: {
+  position: [number, number, number]
+  fix: IssPosition
+}) {
   const ref = useRef<Mesh>(null)
+  const select = useSelect()
   useFrame((_, delta) => {
     if (ref.current) ref.current.rotation.z += delta * 0.3
   })
 
   return (
-    <mesh ref={ref} position={position}>
+    <mesh
+      ref={ref}
+      position={position}
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        select({
+          title: 'ISS',
+          subtitle: 'International Space Station — live',
+          rows: [
+            { label: 'Altitude', value: `${fix.altitudeKm.toFixed(0)} km` },
+            { label: 'Velocity', value: `${fix.velocityKmH.toFixed(0)} km/h` },
+            { label: 'Latitude', value: fix.latitude.toFixed(2) },
+            { label: 'Longitude', value: fix.longitude.toFixed(2) },
+          ],
+        })
+      }}
+    >
       <torusGeometry args={[0.05, 0.012, 8, 16]} />
-      <meshStandardMaterial
-        color={TYPE_STATION}
-        emissive={TYPE_STATION}
-        emissiveIntensity={0.5}
-      />
+      <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.5} />
     </mesh>
   )
 }
+
+function IssTracker({ onFix }: { onFix: () => void }) {
+  const [fix, setFix] = useState<IssPosition | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = () => {
+      fetch('/api/iss')
+        .then((res) => res.json())
+        .then((data: IssPosition & { error?: string }) => {
+          if (!cancelled && !data.error) {
+            setFix(data)
+            onFix()
+          }
+        })
+        .catch(() => {})
+    }
+    poll()
+    const interval = setInterval(poll, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [onFix])
+
+  if (!fix) return null
+  const position = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm)
+  return <StationMarker position={position} fix={fix} />
+}
+
+// ---------------------------------------------------------------------------
+// Legend + scene root
+// ---------------------------------------------------------------------------
 
 function TypeLegend({
   neoCount,
@@ -435,6 +694,7 @@ function TypeLegend({
           {row.label}
         </p>
       ))}
+      <p className="text-white/40">Tap an object for details</p>
     </div>
   )
 }
@@ -442,6 +702,7 @@ function TypeLegend({
 export function EarthScene() {
   const [objects, setObjects] = useState<NearEarthObject[]>([])
   const [issTracked, setIssTracked] = useState(false)
+  const [selected, setSelected] = useState<SelectedInfo | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -458,55 +719,37 @@ export function EarthScene() {
     }
   }, [])
 
-  const trackedCount = objects.filter((neo) => neo.orbit !== null).length
+  const select = useCallback((info: SelectedInfo | null) => setSelected(info), [])
+
+  const trackedObjects = objects.filter((neo) => neo.orbit !== null)
+  const fallbackObjects = objects.filter((neo) => neo.orbit === null)
 
   return (
-    <div className="relative h-full w-full">
-      <Canvas
-        camera={{ position: [0, 0, 3], fov: 45 }}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
-        dpr={[1, 2]}
-      >
-        <ambientLight intensity={0.25} />
-        <SunLight />
-        <Sun />
-        <Earth />
-        <InnerSolarSystem />
-        <NeoField objects={objects} />
-        <IssTracker onFix={() => setIssTracked(true)} />
-        <Stars radius={80} depth={40} count={3000} factor={3} fade />
-        <OrbitControls enablePan={false} minDistance={1.5} maxDistance={20} />
-      </Canvas>
-      <TypeLegend neoCount={objects.length} trackedCount={trackedCount} issTracked={issTracked} />
-    </div>
+    <SelectionContext.Provider value={select}>
+      <div className="relative h-full w-full">
+        <Canvas
+          camera={{ position: [0, 0, 3], fov: 45 }}
+          gl={{ antialias: true, powerPreference: 'high-performance' }}
+          dpr={[1, 2]}
+          onPointerMissed={() => setSelected(null)}
+        >
+          {/* SunLight is the only light in the scene — no ambient fill — so
+              unlit sides genuinely go dark, the way real sunlight works. */}
+          <SunLight />
+          <Earth />
+          <HeliocentricFrame>
+            <Sun />
+            <InnerSolarSystem />
+            <HelioNeoField objects={trackedObjects} />
+          </HeliocentricFrame>
+          <FallbackNeoField objects={fallbackObjects} />
+          <IssTracker onFix={() => setIssTracked(true)} />
+          <Stars radius={80} depth={40} count={3000} factor={3} fade />
+          <OrbitControls enablePan={false} minDistance={1.5} maxDistance={20} />
+        </Canvas>
+        <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
+        {selected ? <InfoPanel info={selected} onClose={() => setSelected(null)} /> : null}
+      </div>
+    </SelectionContext.Provider>
   )
-}
-
-function IssTracker({ onFix }: { onFix: () => void }) {
-  const [fix, setFix] = useState<IssPosition | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const poll = () => {
-      fetch('/api/iss')
-        .then((res) => res.json())
-        .then((data: IssPosition & { error?: string }) => {
-          if (!cancelled && !data.error) {
-            setFix(data)
-            onFix()
-          }
-        })
-        .catch(() => {})
-    }
-    poll()
-    const interval = setInterval(poll, 15000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [onFix])
-
-  if (!fix) return null
-  const position = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm)
-  return <StationMarker position={position} />
 }
