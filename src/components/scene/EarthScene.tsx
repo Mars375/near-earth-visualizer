@@ -1776,16 +1776,22 @@ function Hubble() {
  * camera-focus exactly as if it had been tapped in the scene. */
 function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? entries.filter((entry) => entry.label.toLowerCase().includes(q)) : entries
+  }, [entries, query])
 
   const grouped = useMemo(() => {
     const map = new Map<string, RegistryEntry[]>()
-    for (const entry of entries) {
+    for (const entry of filtered) {
       const list = map.get(entry.category) ?? []
       list.push(entry)
       map.set(entry.category, list)
     }
     return map
-  }, [entries])
+  }, [filtered])
 
   return (
     <div className="pointer-events-auto absolute left-3 top-16">
@@ -1800,6 +1806,14 @@ function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
       </button>
       {open ? (
         <div className="mt-1 max-h-[60vh] w-52 overflow-y-auto rounded border border-white/25 bg-[#0a0a0d]/95 p-2 font-mono text-xs text-white/80 shadow-[0_4px_20px_rgba(0,0,0,0.7)] backdrop-blur-md">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search…"
+            className="mb-2 w-full rounded border border-white/20 bg-white/5 px-2 py-1 text-white/90 placeholder:text-white/30 focus:outline-none"
+          />
+          {filtered.length === 0 ? <p className="px-2 py-1 text-white/40">No match</p> : null}
           {[...grouped.entries()].map(([category, items]) => (
             <div key={category} className="mb-2 last:mb-0">
               <p className="mb-1 text-[0.65rem] uppercase tracking-wide text-white/40">{category}</p>
@@ -1894,7 +1908,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
     <button
       type="button"
       onClick={onToggle}
-      className={`pointer-events-auto absolute right-3 top-16 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+      className={`pointer-events-auto absolute bottom-14 right-3 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
         visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
       }`}
     >
@@ -2027,6 +2041,13 @@ export function EarthScene() {
   // this component's own render output.
   const speedBox = useMemo<SpeedRef>(() => ({ current: REALTIME_DAYS_PER_SECOND }), [])
   const controlsRef = useRef<OrbitControlsImpl>(null)
+  const [webglSupported, setWebglSupported] = useState(true)
+
+  useEffect(() => {
+    const canvas = document.createElement('canvas')
+    const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl')
+    queueMicrotask(() => setWebglSupported(Boolean(gl)))
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -2053,6 +2074,18 @@ export function EarthScene() {
 
   const trackedObjects = objects.filter((neo) => neo.orbit !== null)
   const fallbackObjects = objects.filter((neo) => neo.orbit === null)
+
+  if (!webglSupported) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-black px-6 text-center font-mono text-white/70">
+        <p className="text-sm text-white/90">WebGL unavailable</p>
+        <p className="max-w-xs text-xs">
+          This browser or device can&apos;t render 3D graphics. Try a recent Chrome, Firefox, or Safari with
+          hardware acceleration enabled.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <SelectionContext.Provider value={select}>
