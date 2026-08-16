@@ -24,6 +24,7 @@ import {
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import type { NearEarthObject } from '@/lib/nasa'
 import {
+  COMET_ELEMENTS,
   PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
@@ -31,6 +32,7 @@ import {
   orbitPathPoints,
   subtract,
   unixMsToJulianDate,
+  type CometKey,
   type OrbitalElements,
   type PlanetKey,
 } from '@/lib/orbitalMechanics'
@@ -630,6 +632,91 @@ function InnerSolarSystem() {
   )
 }
 
+type CometConfig = { key: CometKey; label: string; color: string }
+
+// Pale icy blue-white — deliberately outside the reserved status palette
+// (dataviz skill) and the asteroid-type categorical colors, since comets are
+// a visually distinct category (glowing coma, not a flat-shaded sphere) that
+// never appears alongside those in a single legend.
+const COMETS: CometConfig[] = [
+  { key: 'halley', label: "Halley's Comet", color: '#bfe3ff' },
+  { key: 'encke', label: 'Comet Encke', color: '#bfe3ff' },
+  { key: 'churyumovGerasimenko', label: '67P/Churyumov–Gerasimenko', color: '#bfe3ff' },
+]
+
+function cometInfo(config: CometConfig): SelectedInfo {
+  const elements = COMET_ELEMENTS[config.key]
+  const periodYears = 360 / elements.meanMotionDegPerDay / 365.25
+  return {
+    title: config.label,
+    subtitle: 'Periodic comet — real JPL orbital elements',
+    rows: [
+      { label: 'Orbital period', value: `${periodYears.toFixed(1)} years` },
+      { label: 'Eccentricity', value: elements.eccentricity.toFixed(3) },
+      { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(2)} AU` },
+      { label: 'Inclination', value: `${elements.inclinationDeg.toFixed(1)}°` },
+    ],
+  }
+}
+
+/** Real periodic comets from JPL's Small-Body Database, propagated with the
+ * same Keplerian solver as the planets — their orbits are just far more
+ * eccentric/inclined (Halley's e=0.97 is why solveEccentricAnomaly got a
+ * better initial guess and more iterations above). Rendered as a small
+ * nucleus plus an additive glow shell standing in for the coma; no physically
+ * simulated tail. */
+function Comet({ config }: { config: CometConfig }) {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+  const elements = COMET_ELEMENTS[config.key]
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = heliocentricPosition(elements, clockRef.current)
+    const [x, y, z] = toScenePosition(pos)
+    groupRef.current.position.set(x, y, z)
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(cometInfo(config), groupRef.current)
+  }
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <mesh>
+        <sphereGeometry args={[0.02, 12, 12]} />
+        <meshBasicMaterial color={config.color} />
+      </mesh>
+      <mesh>
+        <sphereGeometry args={[0.06, 12, 12]} />
+        <meshBasicMaterial
+          color={config.color}
+          transparent
+          opacity={0.35}
+          blending={AdditiveBlending}
+          depthWrite={false}
+        />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+    </group>
+  )
+}
+
+function CometField() {
+  return (
+    <>
+      {COMETS.map((config) => (
+        <OrbitRing key={`comet-ring-${config.key}`} elements={COMET_ELEMENTS[config.key]} color={config.color} />
+      ))}
+      {COMETS.map((config) => (
+        <Comet key={config.key} config={config} />
+      ))}
+    </>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Near-Earth objects
 // ---------------------------------------------------------------------------
@@ -1000,6 +1087,7 @@ export function EarthScene() {
             <HeliocentricFrame>
               <Sun />
               <InnerSolarSystem />
+              <CometField />
               <HelioNeoField objects={trackedObjects} />
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />

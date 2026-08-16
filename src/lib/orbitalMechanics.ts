@@ -25,10 +25,16 @@ function normalizeDeg(deg: number): number {
   return ((deg % 360) + 360) % 360
 }
 
-/** Newton-Raphson solve of Kepler's equation M = E - e sin(E) for E. */
+/** Newton-Raphson solve of Kepler's equation M = E - e sin(E) for E.
+ * Comets can be highly eccentric (Halley: e ~ 0.97) — the naive E0 = M
+ * starting guess converges too slowly near e -> 1 for a fixed small
+ * iteration count, and a near-zero derivative (1 - e cos E) there can blow
+ * up a single step. The standard fix: a better starting guess
+ * (E0 = M + e sin M) and more iterations for high-e orbits. */
 function solveEccentricAnomaly(meanAnomalyRad: number, eccentricity: number): number {
-  let E = meanAnomalyRad
-  for (let i = 0; i < 8; i += 1) {
+  let E = meanAnomalyRad + eccentricity * Math.sin(meanAnomalyRad)
+  const iterations = eccentricity > 0.8 ? 30 : 10
+  for (let i = 0; i < iterations; i += 1) {
     const delta = E - eccentricity * Math.sin(E) - meanAnomalyRad
     const derivative = 1 - eccentricity * Math.cos(E)
     E -= delta / derivative
@@ -218,6 +224,45 @@ export function moonGeocentricPositionEarthRadii(julianDate: number): Vec3 {
 
 export function subtract(a: Vec3, b: Vec3): Vec3 {
   return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
+}
+
+export type CometKey = 'halley' | 'encke' | 'churyumovGerasimenko'
+
+/** Real elements from NASA/JPL's Small-Body Database (ssd-api.jpl.nasa.gov),
+ * same heliocentric-elements shape as the planets. Halley (i ~ 162°) is a
+ * real retrograde orbit — it falls out of the same rotation math with no
+ * special-casing, inclination just isn't clamped to <90°. */
+export const COMET_ELEMENTS: Record<CometKey, OrbitalElements> = {
+  halley: {
+    semiMajorAxisAu: 17.92863504856923,
+    eccentricity: 0.9679359956953211,
+    inclinationDeg: 162.1905300439129,
+    ascendingNodeDeg: 59.09894720612437,
+    perihelionArgumentDeg: 112.2414314637764,
+    meanAnomalyDeg: 274.3823371366792,
+    meanMotionDegPerDay: 0.01298324443268444,
+    epochJulianDate: 2439875.5,
+  },
+  encke: {
+    semiMajorAxisAu: 2.219688807038326,
+    eccentricity: 0.8477003352638754,
+    inclinationDeg: 11.40704098723543,
+    ascendingNodeDeg: 334.1851099834068,
+    perihelionArgumentDeg: 187.1421582207019,
+    meanAnomalyDeg: 245.5009109690059,
+    meanMotionDegPerDay: 0.2980340851957727,
+    epochJulianDate: 2459855.5,
+  },
+  churyumovGerasimenko: {
+    semiMajorAxisAu: 3.462249489765068,
+    eccentricity: 0.6409081306555051,
+    inclinationDeg: 7.040294906760007,
+    ascendingNodeDeg: 50.13557380441372,
+    perihelionArgumentDeg: 12.79824973415729,
+    meanAnomalyDeg: 8.859927418758764,
+    meanMotionDegPerDay: 0.1529912292115438,
+    epochJulianDate: 2457305.5,
+  },
 }
 
 /** Samples a full ellipse for drawing a static orbit-path line. */
