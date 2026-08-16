@@ -270,6 +270,51 @@ export const COMET_ELEMENTS: Record<CometKey, OrbitalElements> = {
   },
 }
 
+export type VoyagerKey = 'voyager1' | 'voyager2'
+
+type VoyagerState = {
+  distanceAu: number
+  longitudeDeg: number
+  latitudeDeg: number
+  speedAuPerYear: number
+}
+
+// Voyager 1 & 2 are long past any gravitational curving — their last
+// planetary encounters were Saturn in 1980 (V1) and Neptune in 1989 (V2).
+// At 140-170+ AU on an escape trajectory, real motion is very close to
+// purely radial: moving directly away from the Sun along a fixed heading.
+// Modeled as exactly that — a fixed direction plus linearly growing
+// distance — rather than full hyperbolic orbital mechanics. That's not a
+// shortcut that distorts the physics; at this distance and speed, the real
+// trajectory genuinely is close to a straight line.
+//
+// Direction comes from each probe's real current apparent RA/Dec, converted
+// to ecliptic longitude/latitude (this module's frame: +X toward the
+// vernal equinox, XY the ecliptic plane, +Z ecliptic north — same
+// convention as everything else here). Distance and speed are each probe's
+// real reported heliocentric values. Sources: NASA/Wikipedia trajectory
+// data, referenced 2026-08-16 — small drift from that reference date is
+// expected and grows very slowly given how close to linear this motion is.
+const VOYAGER_REFERENCE_JULIAN_DATE = unixMsToJulianDate(Date.UTC(2026, 7, 16))
+
+const VOYAGER_STATES: Record<VoyagerKey, VoyagerState> = {
+  voyager1: { distanceAu: 172.59, longitudeDeg: 255.0, latitudeDeg: 34.9, speedAuPerYear: 3.57 },
+  voyager2: { distanceAu: 142.94, longitudeDeg: 290.76, latitudeDeg: -38.8, speedAuPerYear: 3.24 },
+}
+
+export function voyagerPosition(key: VoyagerKey, julianDate: number): Vec3 {
+  const state = VOYAGER_STATES[key]
+  const yearsSinceReference = (julianDate - VOYAGER_REFERENCE_JULIAN_DATE) / 365.25
+  const distanceAu = state.distanceAu + state.speedAuPerYear * yearsSinceReference
+  const lonRad = (state.longitudeDeg * Math.PI) / 180
+  const latRad = (state.latitudeDeg * Math.PI) / 180
+  return {
+    x: distanceAu * Math.cos(latRad) * Math.cos(lonRad),
+    y: distanceAu * Math.cos(latRad) * Math.sin(lonRad),
+    z: distanceAu * Math.sin(latRad),
+  }
+}
+
 /** Samples a full ellipse for drawing a static orbit-path line. */
 export function orbitPathPoints(elements: OrbitalElements, segments = 128): Vec3[] {
   const points: Vec3[] = []

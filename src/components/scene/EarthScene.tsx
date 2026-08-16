@@ -39,9 +39,11 @@ import {
   orbitPathPoints,
   subtract,
   unixMsToJulianDate,
+  voyagerPosition,
   type CometKey,
   type OrbitalElements,
   type PlanetKey,
+  type VoyagerKey,
 } from '@/lib/orbitalMechanics'
 import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
 import { SatelliteConstellation } from './SatelliteConstellation'
@@ -941,6 +943,82 @@ function CometField() {
 }
 
 // ---------------------------------------------------------------------------
+// Voyager 1 & 2 — real distance/direction/speed, modeled as linear radial
+// motion (see voyagerPosition in orbitalMechanics.ts for why that's a fair
+// model this far out). No orbit ring: these aren't on a closed orbit, and
+// drawing one would wrongly imply periodicity.
+// ---------------------------------------------------------------------------
+
+type VoyagerConfig = { key: VoyagerKey; label: string; color: string; heading: string }
+
+// Colors echo each probe's own real thermal-blanket tone at a glance —
+// V1's is a warmer gold, V2's a cooler silver-blue — rather than a shared
+// arbitrary "probe" color.
+const VOYAGERS: VoyagerConfig[] = [
+  { key: 'voyager1', label: 'Voyager 1', color: '#e8d5a3', heading: 'toward Ophiuchus' },
+  { key: 'voyager2', label: 'Voyager 2', color: '#b9c9db', heading: 'toward Pavo' },
+]
+
+function voyagerInfo(config: VoyagerConfig): SelectedInfo {
+  return {
+    title: config.label,
+    subtitle: `Launched 1977 — real trajectory, linear radial model`,
+    rows: [
+      { label: 'Heading', value: config.heading },
+      { label: 'Status', value: 'Interstellar space' },
+      { label: 'Note', value: 'Distance grows in real time, live map' },
+    ],
+  }
+}
+
+/** Small flat dish + body — evokes the probes' real distinctive antenna
+ * silhouette without a full 3D model. */
+function Voyager({ config }: { config: VoyagerConfig }) {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = voyagerPosition(config.key, clockRef.current)
+    const [x, y, z] = toScenePosition(pos)
+    groupRef.current.position.set(x, y, z)
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(voyagerInfo(config), groupRef.current)
+  }
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.045, 0.045, 0.006, 16]} />
+        <meshStandardMaterial
+          color={config.color}
+          emissive={config.color}
+          emissiveIntensity={0.3}
+          metalness={0.6}
+          roughness={0.4}
+        />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+      <ObjectLabel text={config.label} radius={0.045} />
+    </group>
+  )
+}
+
+function VoyagerField() {
+  return (
+    <>
+      {VOYAGERS.map((config) => (
+        <Voyager key={config.key} config={config} />
+      ))}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Near-Earth objects
 // ---------------------------------------------------------------------------
 
@@ -1009,14 +1087,34 @@ function ClickTarget({ onClick }: { onClick: (event: ThreeEvent<MouseEvent>) => 
  * per-moon-of-a-planet or per-asteroid labels would just clutter the view.
  * distanceFactor shrinks the label with distance so it never dominates the
  * frame up close or vanishes zoomed out. */
+// Hides the label once the camera is closer than this many multiples of the
+// object's own radius — otherwise a label just sits there overlapping the
+// object once it's filling most of the screen, which looks wrong rather
+// than helpful.
+const LABEL_HIDE_DISTANCE_FACTOR = 3.5
+
 function ObjectLabel({ text, radius }: { text: string; radius: number }) {
+  const groupRef = useRef<Group>(null)
+  const worldPos = useMemo(() => new Vector3(), [])
+  const [visible, setVisible] = useState(true)
+
+  useFrame((state) => {
+    if (!groupRef.current) return
+    groupRef.current.getWorldPosition(worldPos)
+    const distance = state.camera.position.distanceTo(worldPos)
+    const shouldShow = distance > radius * LABEL_HIDE_DISTANCE_FACTOR
+    if (shouldShow !== visible) setVisible(shouldShow)
+  })
+
   return (
-    <group position={[0, radius * 1.4, 0]}>
-      <Html center distanceFactor={10} zIndexRange={[0, 0]}>
-        <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/75 backdrop-blur-sm">
-          {text}
-        </div>
-      </Html>
+    <group ref={groupRef} position={[0, radius * 1.4, 0]}>
+      {visible ? (
+        <Html center distanceFactor={10} zIndexRange={[0, 0]}>
+          <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/75 backdrop-blur-sm">
+            {text}
+          </div>
+        </Html>
+      ) : null}
     </group>
   )
 }
@@ -1573,6 +1671,7 @@ export function EarthScene() {
               <Sun />
               <InnerSolarSystem />
               <CometField />
+              <VoyagerField />
               <HelioNeoField objects={trackedObjects} />
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />
