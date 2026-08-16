@@ -144,7 +144,7 @@ function useSelect() {
 
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-4 top-16 w-64 rounded border border-white/15 bg-black/75 p-3 font-mono text-xs text-white/85 backdrop-blur-sm">
+    <div className="pointer-events-auto absolute right-4 top-16 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
       <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
@@ -387,6 +387,16 @@ const SUN_GLOW_FRAGMENT_SHADER = `
  * <HeliocentricFrame>, so its local position is always the heliocentric
  * origin; only self-rotation is animated here. Size is artistic (a
  * real-scale Sun at AU_SCALE would be ~109x Earth's radius). */
+const SUN_INFO: SelectedInfo = {
+  title: 'Sun',
+  subtitle: 'G-type main-sequence star',
+  rows: [
+    { label: 'Mean radius', value: '696,000 km' },
+    { label: 'Surface temp.', value: '~5,500 °C' },
+    { label: 'Distance from Earth', value: '1 AU (149.6M km)' },
+  ],
+}
+
 function Sun() {
   const spinRef = useRef<Mesh>(null)
   const select = useSelect()
@@ -396,22 +406,18 @@ function Sun() {
     if (spinRef.current) spinRef.current.rotation.y += delta * 0.03
   })
 
+  // Default camera focus: the Sun selects itself once, on mount, reusing
+  // the same click-to-focus system rather than a separate camera path.
+  useEffect(() => {
+    select(SUN_INFO, spinRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <group
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select(
-          {
-            title: 'Sun',
-            subtitle: 'G-type main-sequence star',
-            rows: [
-              { label: 'Mean radius', value: '696,000 km' },
-              { label: 'Surface temp.', value: '~5,500 °C' },
-              { label: 'Distance from Earth', value: '1 AU (149.6M km)' },
-            ],
-          },
-          spinRef.current,
-        )
+        select(SUN_INFO, spinRef.current)
       }}
     >
       <mesh ref={spinRef}>
@@ -841,7 +847,7 @@ function TypeLegend({
   ]
 
   return (
-    <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-1 rounded border border-white/15 bg-black/60 px-3 py-2 font-mono text-xs text-white/80 backdrop-blur-sm">
+    <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <p className="text-white/50">
         {neoCount} near-Earth objects · {trackedCount} on real heliocentric orbits
       </p>
@@ -868,7 +874,7 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('accelerated')
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 right-4 flex gap-1 rounded border border-white/15 bg-black/60 p-1 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 backdrop-blur-sm">
+    <div className="pointer-events-auto absolute bottom-4 right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 p-1 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       {(Object.keys(SPEED_MODES) as SpeedMode[]).map((key) => (
         <button
           key={key}
@@ -924,7 +930,7 @@ export function EarthScene() {
     <SelectionContext.Provider value={select}>
       <div className="relative h-full w-full">
         <Canvas
-          camera={{ position: [0, 0, 1.8], fov: 45, near: 0.01, far: 200 }}
+          camera={{ position: [3, 2, 9], fov: 45, near: 0.01, far: 200 }}
           gl={{ antialias: true, powerPreference: 'high-performance' }}
           dpr={[1, 2]}
           onPointerMissed={() => {

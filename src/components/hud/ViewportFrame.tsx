@@ -45,7 +45,7 @@ function UtcClock() {
 export function ViewportFrame({ children }: { children: React.ReactNode }) {
   return (
     <div className="relative h-full w-full">
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex h-11 items-center justify-between border-b border-white/15 bg-black/60 px-4 font-mono text-xs uppercase tracking-[0.16em] text-white/70 backdrop-blur-sm">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex h-11 items-center justify-between border-b border-white/25 bg-[#0a0a0d]/90 px-4 font-mono text-xs uppercase tracking-[0.16em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
         <span>Near Earth Visualizer</span>
         <UtcClock />
       </div>
