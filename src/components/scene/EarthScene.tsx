@@ -30,6 +30,7 @@ import {
   heliocentricPosition,
   MOON_SEMI_MAJOR_AXIS_EARTH_RADII,
   moonGeocentricPositionEarthRadii,
+  moonOrbitalElements,
   orbitPathPoints,
   subtract,
   unixMsToJulianDate,
@@ -62,6 +63,13 @@ const EARTH_RADIUS = 0.5 // scene units — was an oversized 1
 // Earth. Compressed to a fixed scene-unit distance instead, same "subway
 // map" trade-off as the outer-planet compression above.
 const MOON_SCENE_ORBIT_RADIUS = 1.8
+const MOON_ORBIT_SCALE = MOON_SCENE_ORBIT_RADIUS / MOON_SEMI_MAJOR_AXIS_EARTH_RADII
+
+// Distinct from the planet-ring grey (#5a5a52) and the Earth-ring blue
+// (#3987e5) — every moon orbit (Earth's own and other planets') shares this
+// one muted color, fainter than a planet ring, so the ring hierarchy reads
+// at a glance: planets brightest, moons faintest.
+const MOON_RING_COLOR = '#7d89a3'
 const AU_SCALE = 6 // scene units per AU inside the inner system — was 4, more breathing room
 
 // Beyond Mars' neighborhood, real AU distances get compressed (log scale) so
@@ -398,8 +406,11 @@ function Moon() {
     const pos = moonGeocentricPositionEarthRadii(clockRef.current)
     // Uniform scale-down (not a re-normalized circle) — the real orbit's
     // eccentricity still shows, just compressed to a visible distance.
-    const scale = MOON_SCENE_ORBIT_RADIUS / MOON_SEMI_MAJOR_AXIS_EARTH_RADII
-    groupRef.current.position.set(pos.x * scale, pos.y * scale, pos.z * scale)
+    groupRef.current.position.set(
+      pos.x * MOON_ORBIT_SCALE,
+      pos.y * MOON_ORBIT_SCALE,
+      pos.z * MOON_ORBIT_SCALE,
+    )
   })
 
   return (
@@ -716,7 +727,12 @@ function Planet({ config }: { config: PlanetConfig }) {
           <meshBasicMaterial color="#c9b896" transparent opacity={0.55} side={BackSide} />
         </mesh>
       ) : null}
-      {config.moons?.map((moon) => <PlanetMoon key={moon.key} config={moon} />)}
+      {config.moons?.map((moon) => (
+        <group key={moon.key}>
+          <MoonOrbitCircle radius={moon.sceneOrbitRadius} />
+          <PlanetMoon config={moon} />
+        </group>
+      ))}
     </group>
   )
 }
@@ -725,12 +741,48 @@ function Planet({ config }: { config: PlanetConfig }) {
  * elements don't change, so this needs no per-frame recompute; the parent
  * <HeliocentricFrame>'s single transform keeps it Earth-relative. Points go
  * through the same distance compression as the planet markers. */
-function OrbitRing({ elements, color }: { elements: OrbitalElements; color: string }) {
+function OrbitRing({
+  elements,
+  color,
+  opacity = 0.25,
+}: {
+  elements: OrbitalElements
+  color: string
+  opacity?: number
+}) {
   const points = useMemo(
     () => orbitPathPoints(elements, 160).map((p) => toScenePosition(p)),
     [elements],
   )
-  return <Line points={points} color={color} transparent opacity={0.25} lineWidth={1} />
+  return <Line points={points} color={color} transparent opacity={opacity} lineWidth={1} />
+}
+
+/** Earth's Moon ring — a snapshot of the (slowly precessing) geocentric
+ * elements at mount, scaled by the same fixed factor as the Moon marker
+ * itself. It won't visibly track the real 18.6yr node precession, which is
+ * an acceptable simplification: it's imperceptible frame-to-frame even at
+ * the fastest simulated time setting. */
+function MoonOrbitRing() {
+  const points = useMemo(
+    () =>
+      orbitPathPoints(moonOrbitalElements(BASE_JULIAN_DATE), 128).map(
+        (p): [number, number, number] => [p.x * MOON_ORBIT_SCALE, p.y * MOON_ORBIT_SCALE, p.z * MOON_ORBIT_SCALE],
+      ),
+    [],
+  )
+  return <Line points={points} color={MOON_RING_COLOR} transparent opacity={0.15} lineWidth={1} />
+}
+
+/** Flat circular ring for a non-Earth planet's moon — matches the circular
+ * approximation <PlanetMoon> itself moves along, so the ring and the moon
+ * always line up exactly. */
+function MoonOrbitCircle({ radius }: { radius: number }) {
+  return (
+    <mesh rotation={[Math.PI / 2, 0, 0]}>
+      <ringGeometry args={[radius - 0.004, radius + 0.004, 64]} />
+      <meshBasicMaterial color={MOON_RING_COLOR} transparent opacity={0.15} side={BackSide} />
+    </mesh>
+  )
 }
 
 function InnerSolarSystem() {
@@ -917,14 +969,40 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
   )
 
   return (
-    <group ref={groupRef}>
-      <mesh>
-        <sphereGeometry args={[radius, 12, 12]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
-      </mesh>
-      <ClickTarget onClick={handleClick} />
-    </group>
+    <>
+      {/* Fainter than a planet ring, colored by the same hazard status as
+          the marker itself — reuses the reserved status palette rather than
+          introducing a new ring color for asteroids. */}
+      <OrbitRing elements={orbit} color={color} opacity={0.12} />
+      <group ref={groupRef}>
+        <mesh>
+          <sphereGeometry args={[radius, 12, 12]} />
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
+        </mesh>
+        <ClickTarget onClick={handleClick} />
+      </group>
+    </>
   )
+}
+
+/** Static tilted circle matching a <FallbackNeoMarker>'s schematic orbit
+ * (radius/phi, no real elements) — fainter still than a real-orbit ring, a
+ * visual cue that this path is approximated, not measured. */
+function FallbackOrbitRing({ orbit, color }: { orbit: FallbackOrbit; color: string }) {
+  const points = useMemo(() => {
+    const segments = 96
+    const pts: [number, number, number][] = []
+    for (let i = 0; i <= segments; i += 1) {
+      const theta = (i / segments) * Math.PI * 2
+      pts.push([
+        orbit.radius * Math.cos(orbit.phi) * Math.cos(theta),
+        orbit.radius * Math.sin(orbit.phi),
+        orbit.radius * Math.cos(orbit.phi) * Math.sin(theta),
+      ])
+    }
+    return pts
+  }, [orbit])
+  return <Line points={points} color={color} transparent opacity={0.08} lineWidth={1} />
 }
 
 /** Earth-relative schematic placement — deliberately NOT inside
@@ -956,13 +1034,16 @@ function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number
   )
 
   return (
-    <group ref={groupRef}>
-      <mesh>
-        <sphereGeometry args={[radius, 12, 12]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
-      </mesh>
-      <ClickTarget onClick={handleClick} />
-    </group>
+    <>
+      <FallbackOrbitRing orbit={orbit} color={color} />
+      <group ref={groupRef}>
+        <mesh>
+          <sphereGeometry args={[radius, 12, 12]} />
+          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
+        </mesh>
+        <ClickTarget onClick={handleClick} />
+      </group>
+    </>
   )
 }
 
@@ -1213,6 +1294,7 @@ export function EarthScene() {
             {/* SunLight is the only light in the scene — no ambient fill. */}
             <SunLight />
             <Earth />
+            <MoonOrbitRing />
             <Moon />
             <HeliocentricFrame>
               <Sun />

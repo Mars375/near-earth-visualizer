@@ -204,12 +204,11 @@ const MOON_PERIGEE_DRIFT_DEG_PER_DAY = 0.1643573223
 const MOON_MEAN_ANOMALY_AT_J2000_DEG = 115.3654
 const MOON_MEAN_MOTION_DEG_PER_DAY = 13.0649929509
 
-/** Geocentric Moon position in Earth radii (not AU — this orbits Earth, not
- * the Sun) using the classical-elements machinery above with precessing
- * node/perigee evaluated at this date. */
-export function moonGeocentricPositionEarthRadii(julianDate: number): Vec3 {
+/** Elements for the Moon's geocentric orbit at a given date — node and
+ * perigee precess, so this isn't a fixed set of constants like the planets'. */
+export function moonOrbitalElements(julianDate: number): OrbitalElements {
   const d = julianDate - J2000_JULIAN_DATE
-  const elements: OrbitalElements = {
+  return {
     semiMajorAxisAu: MOON_SEMI_MAJOR_AXIS_EARTH_RADII,
     eccentricity: MOON_ECCENTRICITY,
     inclinationDeg: MOON_INCLINATION_DEG,
@@ -219,7 +218,13 @@ export function moonGeocentricPositionEarthRadii(julianDate: number): Vec3 {
     meanMotionDegPerDay: 0,
     epochJulianDate: julianDate,
   }
-  return heliocentricPosition(elements, julianDate)
+}
+
+/** Geocentric Moon position in Earth radii (not AU — this orbits Earth, not
+ * the Sun) using the classical-elements machinery above with precessing
+ * node/perigee evaluated at this date. */
+export function moonGeocentricPositionEarthRadii(julianDate: number): Vec3 {
+  return heliocentricPosition(moonOrbitalElements(julianDate), julianDate)
 }
 
 export function subtract(a: Vec3, b: Vec3): Vec3 {
