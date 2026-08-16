@@ -1325,7 +1325,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
 }
 
 function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
-  const [mode, setMode] = useState<SpeedMode>('accelerated')
+  const [mode, setMode] = useState<SpeedMode>('realtime')
 
   return (
     <div className="pointer-events-auto absolute bottom-4 right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 p-1 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
@@ -1355,7 +1355,7 @@ export function EarthScene() {
   // A plain mutable box, not a React ref — the time-speed toggle mutates it
   // directly and useFrame callbacks read it every frame; it never drives
   // this component's own render output.
-  const speedBox = useMemo<SpeedRef>(() => ({ current: ACCELERATED_DAYS_PER_SECOND }), [])
+  const speedBox = useMemo<SpeedRef>(() => ({ current: REALTIME_DAYS_PER_SECOND }), [])
   const controlsRef = useRef<OrbitControlsImpl>(null)
 
   useEffect(() => {
