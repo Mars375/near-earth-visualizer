@@ -17,6 +17,7 @@ import {
   Box3,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  Quaternion,
   SphereGeometry,
   Vector3,
   type DirectionalLight,
@@ -331,6 +332,27 @@ function Atmosphere() {
   )
 }
 
+// Real axial tilt (23.4393°), fixed in ecliptic space — this codebase's
+// heliocentric frame follows the standard astronomical convention (+X toward
+// the vernal equinox, XY the ecliptic plane, +Z ecliptic north), unchanged
+// by toScenePosition, so this vector applies directly as a scene rotation.
+// Without it, the sphere's spin axis was ecliptic-normal (no tilt at all),
+// so the day/night shader had no notion of polar night — meanwhile the live
+// GIBS day-map texture *does* show real polar night (Antarctica is
+// genuinely dark for months around southern winter), baked into the source
+// imagery regardless of viewing angle. The mismatch read as a rendering
+// defect: a dark smudge sitting on a region our own shader considered "lit."
+// Tilting the axis to match reality makes the two agree.
+const EARTH_OBLIQUITY_DEG = 23.4393
+const EARTH_AXIAL_TILT_QUATERNION = new Quaternion().setFromUnitVectors(
+  new Vector3(0, 1, 0),
+  new Vector3(
+    0,
+    Math.sin((EARTH_OBLIQUITY_DEG * Math.PI) / 180),
+    Math.cos((EARTH_OBLIQUITY_DEG * Math.PI) / 180),
+  ).normalize(),
+)
+
 function Earth() {
   const meshRef = useRef<Mesh>(null)
   const materialRef = useRef<ShaderMaterial>(null)
@@ -369,6 +391,7 @@ function Earth() {
 
   return (
     <group
+      quaternion={EARTH_AXIAL_TILT_QUATERNION}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
         select(
