@@ -68,13 +68,12 @@ const NEO_MATERIAL_SAFE = new MeshStandardMaterial({
   emissiveIntensity: 0.4,
 })
 
-// Categorical object-type colors — first 3 slots of the dataviz skill's
-// default palette, the only ones that pass the all-pairs CVD check (any two
-// markers can sit side by side here, so the adjacent-only check isn't enough).
+// Categorical object-type colors — 2 of the dataviz skill's default palette
+// slots, validated for the all-pairs CVD check (any two markers can sit side
+// by side here, so the adjacent-only check isn't enough).
 // Validated: node validate_palette.js "#3987e5,#d95926,#199e70" --mode dark
 // --surface "#000000" --pairs all -> ALL CHECKS PASS.
 const TYPE_SATELLITE = '#3987e5' // blue
-const TYPE_SHUTTLE = '#d95926' // orange
 const TYPE_STATION = '#199e70' // aqua
 
 const AU_IN_KM = 149_597_870.7
@@ -1250,6 +1249,9 @@ function IssTracker({ onFix }: { onFix: () => void }) {
 // HUD: legend + time-speed control
 // ---------------------------------------------------------------------------
 
+/** Collapsed by default — the fully expanded panel ate a large chunk of a
+ * phone screen's vertical space. Starts as a single-line pill; tap expands
+ * it in place. */
 function TypeLegend({
   neoCount,
   trackedCount,
@@ -1259,6 +1261,8 @@ function TypeLegend({
   trackedCount: number
   issTracked: boolean
 }) {
+  const [expanded, setExpanded] = useState(false)
+
   const rows: Array<{ color: string; shape: string; label: string }> = [
     { color: STATUS_HAZARDOUS, shape: 'rounded-full', label: 'asteroid — potentially hazardous' },
     { color: STATUS_SAFE, shape: 'rounded-full', label: 'asteroid — not hazardous' },
@@ -1268,21 +1272,32 @@ function TypeLegend({
       label: issTracked ? 'space station — ISS (live)' : 'space station — awaiting fix',
     },
     { color: TYPE_SATELLITE, shape: 'rounded-full', label: 'Starlink constellation — live TLE' },
-    { color: TYPE_SHUTTLE, shape: 'rounded-full', label: 'shuttle — tracking pending' },
   ]
 
   return (
-    <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
-      <p className="text-white/50">
-        {neoCount} near-Earth objects · {trackedCount} on real heliocentric orbits
-      </p>
-      {rows.map((row) => (
-        <p key={row.label} className="flex items-center gap-2">
-          <span className={`inline-block h-2 w-2 ${row.shape}`} style={{ background: row.color }} />
-          {row.label}
-        </p>
-      ))}
-      <p className="text-white/40">Tap an object for details &amp; focus</p>
+    <div className="pointer-events-auto absolute bottom-4 left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex min-h-8 w-full items-center gap-3 px-3 py-1.5 text-left"
+      >
+        <span className="text-white/60">
+          {neoCount} objects{expanded ? '' : ' · legend'}
+        </span>
+        <span className="ml-auto text-white/40">{expanded ? '−' : '+'}</span>
+      </button>
+      {expanded ? (
+        <div className="flex flex-col gap-1 border-t border-white/15 px-3 pb-2 pt-1.5">
+          <p className="text-white/50">{trackedCount} on real heliocentric orbits</p>
+          {rows.map((row) => (
+            <p key={row.label} className="flex items-center gap-2">
+              <span className={`inline-block h-2 w-2 ${row.shape}`} style={{ background: row.color }} />
+              {row.label}
+            </p>
+          ))}
+          <p className="text-white/40">Tap an object for details &amp; focus</p>
+        </div>
+      ) : null}
     </div>
   )
 }
