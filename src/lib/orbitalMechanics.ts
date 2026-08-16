@@ -181,6 +181,41 @@ export function earthHeliocentricPosition(julianDate: number): Vec3 {
   return heliocentricPosition(PLANETARY_ELEMENTS.earth, julianDate)
 }
 
+// Moon — Paul Schlyter's well-known low-precision geocentric formula
+// (stjarnhimlen.se/comp/tutorial.html). Unlike the planets, the Moon's
+// ascending node and argument of perigee aren't fixed — they precess
+// measurably (node regresses ~18.6yr period, perigee advances ~8.85yr) —
+// so both are linear-in-time here rather than constants, evaluated at the
+// target date and fed into heliocentricPosition with meanMotionDegPerDay
+// zeroed out (the drift is already baked into the evaluated values).
+const MOON_SEMI_MAJOR_AXIS_EARTH_RADII = 60.2666
+const MOON_ECCENTRICITY = 0.0549
+const MOON_INCLINATION_DEG = 5.1454
+const MOON_NODE_AT_J2000_DEG = 125.1228
+const MOON_NODE_DRIFT_DEG_PER_DAY = -0.0529538083
+const MOON_PERIGEE_AT_J2000_DEG = 318.0634
+const MOON_PERIGEE_DRIFT_DEG_PER_DAY = 0.1643573223
+const MOON_MEAN_ANOMALY_AT_J2000_DEG = 115.3654
+const MOON_MEAN_MOTION_DEG_PER_DAY = 13.0649929509
+
+/** Geocentric Moon position in Earth radii (not AU — this orbits Earth, not
+ * the Sun) using the classical-elements machinery above with precessing
+ * node/perigee evaluated at this date. */
+export function moonGeocentricPositionEarthRadii(julianDate: number): Vec3 {
+  const d = julianDate - J2000_JULIAN_DATE
+  const elements: OrbitalElements = {
+    semiMajorAxisAu: MOON_SEMI_MAJOR_AXIS_EARTH_RADII,
+    eccentricity: MOON_ECCENTRICITY,
+    inclinationDeg: MOON_INCLINATION_DEG,
+    ascendingNodeDeg: MOON_NODE_AT_J2000_DEG + MOON_NODE_DRIFT_DEG_PER_DAY * d,
+    perihelionArgumentDeg: MOON_PERIGEE_AT_J2000_DEG + MOON_PERIGEE_DRIFT_DEG_PER_DAY * d,
+    meanAnomalyDeg: MOON_MEAN_ANOMALY_AT_J2000_DEG + MOON_MEAN_MOTION_DEG_PER_DAY * d,
+    meanMotionDegPerDay: 0,
+    epochJulianDate: julianDate,
+  }
+  return heliocentricPosition(elements, julianDate)
+}
+
 export function subtract(a: Vec3, b: Vec3): Vec3 {
   return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
 }

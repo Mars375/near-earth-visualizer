@@ -27,6 +27,7 @@ import {
   PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
+  moonGeocentricPositionEarthRadii,
   orbitPathPoints,
   subtract,
   unixMsToJulianDate,
@@ -341,6 +342,59 @@ function Earth() {
       </mesh>
       <Clouds />
       <Atmosphere />
+    </group>
+  )
+}
+
+const MOON_INFO: SelectedInfo = {
+  title: 'Moon',
+  subtitle: "Earth's only natural satellite",
+  rows: [
+    { label: 'Mean radius', value: '1,737 km' },
+    { label: 'Orbital period', value: '27.32 days (sidereal)' },
+    { label: 'Mean distance', value: '384,400 km (60.3 Earth radii)' },
+  ],
+}
+
+/** Real geocentric orbit — Earth-relative, not heliocentric, so this is a
+ * sibling of <Earth/>, not inside <HeliocentricFrame>. At its true relative
+ * distance (~60 Earth radii) the Moon is genuinely far from a
+ * radius-0.5-scene-unit Earth; rendered radius is boosted for visibility,
+ * same "artistic size, real distance" trade-off as the Sun and planets. */
+function Moon() {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+  const map = useTexture('/textures/2k_moon.jpg')
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = moonGeocentricPositionEarthRadii(clockRef.current)
+    groupRef.current.position.set(
+      pos.x * EARTH_RADIUS,
+      pos.y * EARTH_RADIUS,
+      pos.z * EARTH_RADIUS,
+    )
+  })
+
+  return (
+    <group
+      ref={groupRef}
+      onClick={(event: ThreeEvent<MouseEvent>) => {
+        event.stopPropagation()
+        select(MOON_INFO, groupRef.current)
+      }}
+    >
+      <mesh>
+        <sphereGeometry args={[0.035, 24, 24]} />
+        <meshStandardMaterial map={map} roughness={1} />
+      </mesh>
+      <ClickTarget
+        onClick={(event) => {
+          event.stopPropagation()
+          select(MOON_INFO, groupRef.current)
+        }}
+      />
     </group>
   )
 }
@@ -942,6 +996,7 @@ export function EarthScene() {
             {/* SunLight is the only light in the scene — no ambient fill. */}
             <SunLight />
             <Earth />
+            <Moon />
             <HeliocentricFrame>
               <Sun />
               <InnerSolarSystem />
