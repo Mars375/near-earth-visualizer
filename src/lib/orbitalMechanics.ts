@@ -270,6 +270,44 @@ export const COMET_ELEMENTS: Record<CometKey, OrbitalElements> = {
   },
 }
 
+export type DwarfPlanetKey = 'pluto' | 'ceres' | 'eris'
+
+/** Real elements from NASA/JPL's Small-Body Database — same source and
+ * shape as the comets above. Moderate eccentricities (Pluto 0.25, Eris
+ * 0.44), well within the standard Kepler solver's range. */
+export const DWARF_PLANET_ELEMENTS: Record<DwarfPlanetKey, OrbitalElements> = {
+  pluto: {
+    semiMajorAxisAu: 39.58862938517124,
+    eccentricity: 0.2518378778576892,
+    inclinationDeg: 17.14771140999114,
+    ascendingNodeDeg: 110.2923840543057,
+    perihelionArgumentDeg: 113.7090015158565,
+    meanAnomalyDeg: 38.68366347318184,
+    meanMotionDegPerDay: 0.003956838955553025,
+    epochJulianDate: 2457588.5,
+  },
+  ceres: {
+    semiMajorAxisAu: 2.765552595034094,
+    eccentricity: 0.07969229514816586,
+    inclinationDeg: 10.58802780183462,
+    ascendingNodeDeg: 80.24862682043221,
+    perihelionArgumentDeg: 73.29421453021587,
+    meanAnomalyDeg: 274.4193463761342,
+    meanMotionDegPerDay: 0.21430445064843,
+    epochJulianDate: 2461200.5,
+  },
+  eris: {
+    semiMajorAxisAu: 67.93394687853566,
+    eccentricity: 0.4382385347971672,
+    inclinationDeg: 43.9258279471791,
+    ascendingNodeDeg: 36.00477044417249,
+    perihelionArgumentDeg: 150.7949235840312,
+    meanAnomalyDeg: 211.774434275007,
+    meanMotionDegPerDay: 0.001760247770619088,
+    epochJulianDate: 2461200.5,
+  },
+}
+
 export type VoyagerKey = 'voyager1' | 'voyager2'
 
 type VoyagerState = {

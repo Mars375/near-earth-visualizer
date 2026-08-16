@@ -24,12 +24,15 @@ import {
   type Group,
   type Mesh,
   type Object3D,
+  type Points,
+  type PointsMaterial,
   type ShaderMaterial,
 } from 'three'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import type { NearEarthObject } from '@/lib/nasa'
 import {
   COMET_ELEMENTS,
+  DWARF_PLANET_ELEMENTS,
   PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
@@ -41,6 +44,7 @@ import {
   unixMsToJulianDate,
   voyagerPosition,
   type CometKey,
+  type DwarfPlanetKey,
   type OrbitalElements,
   type PlanetKey,
   type VoyagerKey,
@@ -1047,6 +1051,89 @@ function CometField() {
 }
 
 // ---------------------------------------------------------------------------
+// Dwarf planets — real JPL orbital elements, same Kepler pipeline as the
+// planets/comets above (moderate eccentricities, nothing the solver needs
+// hardening for).
+// ---------------------------------------------------------------------------
+
+type DwarfPlanetConfig = { key: DwarfPlanetKey; label: string; color: string }
+
+// Colors echo each body's own real surface tone: Pluto's ruddy tan
+// (tholins), Ceres' dark neutral grey (carbonaceous), Eris' near-white —
+// it's genuinely one of the most reflective bodies in the solar system
+// (methane-ice surface), not a picked accent.
+const DWARF_PLANETS: DwarfPlanetConfig[] = [
+  { key: 'pluto', label: 'Pluto', color: '#c9a876' },
+  { key: 'ceres', label: 'Ceres', color: '#9a958c' },
+  { key: 'eris', label: 'Eris', color: '#e8e6e0' },
+]
+
+function dwarfPlanetInfo(config: DwarfPlanetConfig): SelectedInfo {
+  const elements = DWARF_PLANET_ELEMENTS[config.key]
+  const periodYears = 360 / elements.meanMotionDegPerDay / 365.25
+  return {
+    title: config.label,
+    subtitle: 'Dwarf planet — real JPL orbital elements',
+    rows: [
+      { label: 'Orbital period', value: `${periodYears.toFixed(0)} years` },
+      { label: 'Eccentricity', value: elements.eccentricity.toFixed(3) },
+      { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(2)} AU` },
+      { label: 'Inclination', value: `${elements.inclinationDeg.toFixed(1)}°` },
+    ],
+  }
+}
+
+function DwarfPlanet({ config }: { config: DwarfPlanetConfig }) {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+  const elements = DWARF_PLANET_ELEMENTS[config.key]
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = heliocentricPosition(elements, clockRef.current)
+    const [x, y, z] = toScenePosition(pos)
+    groupRef.current.position.set(x, y, z)
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(dwarfPlanetInfo(config), groupRef.current, 0.06)
+  }
+
+  useRegisterObject({
+    key: config.key,
+    label: config.label,
+    category: 'Dwarf planets',
+    onSelect: () => select(dwarfPlanetInfo(config), groupRef.current, 0.06),
+  })
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <mesh>
+        <sphereGeometry args={[0.06, 12, 12]} />
+        <meshStandardMaterial color={config.color} roughness={0.9} />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+      <ObjectLabel text={config.label} radius={0.06} />
+    </group>
+  )
+}
+
+function DwarfPlanetField() {
+  return (
+    <>
+      {DWARF_PLANETS.map((config) => (
+        <OrbitRing key={`dwarf-ring-${config.key}`} elements={DWARF_PLANET_ELEMENTS[config.key]} color={config.color} opacity={0.14} />
+      ))}
+      {DWARF_PLANETS.map((config) => (
+        <DwarfPlanet key={config.key} config={config} />
+      ))}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Voyager 1 & 2 — real distance/direction/speed, modeled as linear radial
 // motion (see voyagerPosition in orbitalMechanics.ts for why that's a fair
 // model this far out). No orbit ring: these aren't on a closed orbit, and
@@ -1222,7 +1309,7 @@ function ClickTarget({
 // object's own radius — otherwise a label just sits there overlapping the
 // object once it's filling most of the screen, which looks wrong rather
 // than helpful.
-const LABEL_HIDE_DISTANCE_FACTOR = 3.5
+const LABEL_HIDE_DISTANCE_FACTOR = 6
 
 // OrbitControls' minDistance (how close the camera can zoom to the current
 // orbit target) — comfortably smaller than LABEL_HIDE_DISTANCE_FACTOR so
@@ -1835,6 +1922,30 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   )
 }
 
+// Fades the starfield out as the camera pulls back — at full zoom-out
+// (near OrbitControls' maxDistance) the fixed-radius procedural star sphere
+// stops reading as "distant background" and starts looking like clutter
+// pasted just outside the visible solar system, so it's faded to nothing
+// well before maxDistance instead of staying constant at every zoom level.
+const STAR_FADE_START_DISTANCE = 25
+const STAR_FADE_END_DISTANCE = 55
+
+function FadingStars({ controlsRef }: { controlsRef: React.RefObject<OrbitControlsImpl | null> }) {
+  const pointsRef = useRef<Points>(null)
+
+  useFrame(() => {
+    if (!pointsRef.current || !controlsRef.current) return
+    const distance = controlsRef.current.getDistance()
+    const t = (distance - STAR_FADE_START_DISTANCE) / (STAR_FADE_END_DISTANCE - STAR_FADE_START_DISTANCE)
+    const opacity = 1 - Math.min(1, Math.max(0, t))
+    const material = pointsRef.current.material as PointsMaterial
+    material.transparent = true
+    material.opacity = opacity
+  })
+
+  return <Stars ref={pointsRef} radius={80} depth={40} count={3000} factor={3} fade />
+}
+
 export function EarthScene() {
   const [objects, setObjects] = useState<NearEarthObject[]>([])
   const [issTracked, setIssTracked] = useState(false)
@@ -1908,6 +2019,7 @@ export function EarthScene() {
               <InnerSolarSystem />
               <CometField />
               <VoyagerField />
+              <DwarfPlanetField />
               <HelioNeoField objects={trackedObjects} />
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />
@@ -1916,7 +2028,7 @@ export function EarthScene() {
             <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
-          <Stars radius={80} depth={40} count={3000} factor={3} fade />
+          <FadingStars controlsRef={controlsRef} />
           <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
         <ObjectMenu entries={menuEntries} />
