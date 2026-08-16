@@ -770,7 +770,7 @@ function MoonOrbitRing() {
       ),
     [],
   )
-  return <Line points={points} color={MOON_RING_COLOR} transparent opacity={0.15} lineWidth={1} />
+  return <Line points={points} color={MOON_RING_COLOR} transparent opacity={0.13} lineWidth={1} />
 }
 
 /** Flat circular ring for a non-Earth planet's moon — matches the circular
@@ -780,7 +780,7 @@ function MoonOrbitCircle({ radius }: { radius: number }) {
   return (
     <mesh rotation={[Math.PI / 2, 0, 0]}>
       <ringGeometry args={[radius - 0.004, radius + 0.004, 64]} />
-      <meshBasicMaterial color={MOON_RING_COLOR} transparent opacity={0.15} side={BackSide} />
+      <meshBasicMaterial color={MOON_RING_COLOR} transparent opacity={0.13} side={BackSide} />
     </mesh>
   )
 }
@@ -788,9 +788,9 @@ function MoonOrbitCircle({ radius }: { radius: number }) {
 function InnerSolarSystem() {
   return (
     <>
-      <OrbitRing elements={PLANETARY_ELEMENTS.earth} color="#3987e5" />
+      <OrbitRing elements={PLANETARY_ELEMENTS.earth} color="#3987e5" opacity={0.22} />
       {PLANETS.map((config) => (
-        <OrbitRing key={`ring-${config.key}`} elements={PLANETARY_ELEMENTS[config.key]} color="#5a5a52" />
+        <OrbitRing key={`ring-${config.key}`} elements={PLANETARY_ELEMENTS[config.key]} color="#5a5a52" opacity={0.2} />
       ))}
       {PLANETS.map((config) => (
         <Planet key={config.key} config={config} />
@@ -875,7 +875,7 @@ function CometField() {
   return (
     <>
       {COMETS.map((config) => (
-        <OrbitRing key={`comet-ring-${config.key}`} elements={COMET_ELEMENTS[config.key]} color={config.color} />
+        <OrbitRing key={`comet-ring-${config.key}`} elements={COMET_ELEMENTS[config.key]} color={config.color} opacity={0.16} />
       ))}
       {COMETS.map((config) => (
         <Comet key={config.key} config={config} />
@@ -973,7 +973,7 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
       {/* Fainter than a planet ring, colored by the same hazard status as
           the marker itself — reuses the reserved status palette rather than
           introducing a new ring color for asteroids. */}
-      <OrbitRing elements={orbit} color={color} opacity={0.12} />
+      <OrbitRing elements={orbit} color={color} opacity={0.1} />
       <group ref={groupRef}>
         <mesh>
           <sphereGeometry args={[radius, 12, 12]} />
@@ -1002,7 +1002,7 @@ function FallbackOrbitRing({ orbit, color }: { orbit: FallbackOrbit; color: stri
     }
     return pts
   }, [orbit])
-  return <Line points={points} color={color} transparent opacity={0.08} lineWidth={1} />
+  return <Line points={points} color={color} transparent opacity={0.07} lineWidth={1} />
 }
 
 /** Earth-relative schematic placement — deliberately NOT inside
