@@ -37,6 +37,7 @@ import {
   type PlanetKey,
 } from '@/lib/orbitalMechanics'
 import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
+import { SatelliteConstellation } from './SatelliteConstellation'
 
 // Status colors from the dataviz skill's fixed status palette — reserved for
 // the asteroid hazard flag only, never reused for arbitrary series identity.
@@ -990,7 +991,7 @@ function TypeLegend({
       shape: 'rounded-full',
       label: issTracked ? 'space station — ISS (live)' : 'space station — awaiting fix',
     },
-    { color: TYPE_SATELLITE, shape: 'rounded-full', label: 'satellite — tracking pending' },
+    { color: TYPE_SATELLITE, shape: 'rounded-full', label: 'Starlink constellation — live TLE' },
     { color: TYPE_SHUTTLE, shape: 'rounded-full', label: 'shuttle — tracking pending' },
   ]
 
@@ -1018,6 +1019,20 @@ const SPEED_MODES: Record<SpeedMode, { label: string; daysPerSecond: number }> =
   fast: { label: '45 d/s', daysPerSecond: FAST_DAYS_PER_SECOND },
 }
 
+function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`pointer-events-auto absolute right-3 top-16 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+        visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
+      }`}
+    >
+      {visible ? 'Hide satellites' : 'Show satellites'}
+    </button>
+  )
+}
+
 function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('accelerated')
 
@@ -1043,6 +1058,7 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
 export function EarthScene() {
   const [objects, setObjects] = useState<NearEarthObject[]>([])
   const [issTracked, setIssTracked] = useState(false)
+  const [showSatellites, setShowSatellites] = useState(true)
   const [selected, setSelected] = useState<SelectedInfo | null>(null)
   const [focusTarget, setFocusTarget] = useState<Object3D | null>(null)
   // A plain mutable box, not a React ref — the time-speed toggle mutates it
@@ -1099,12 +1115,14 @@ export function EarthScene() {
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />
             <IssTracker onFix={() => setIssTracked(true)} />
+            <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
           <Stars radius={80} depth={40} count={3000} factor={3} fade />
           <OrbitControls ref={controlsRef} enablePan={false} minDistance={0.7} maxDistance={60} />
         </Canvas>
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
+        <SatelliteToggle visible={showSatellites} onToggle={() => setShowSatellites((v) => !v)} />
         <TimeControl speedRef={speedBox} />
         {selected ? (
           <InfoPanel
