@@ -194,7 +194,7 @@ export function earthHeliocentricPosition(julianDate: number): Vec3 {
 // so both are linear-in-time here rather than constants, evaluated at the
 // target date and fed into heliocentricPosition with meanMotionDegPerDay
 // zeroed out (the drift is already baked into the evaluated values).
-const MOON_SEMI_MAJOR_AXIS_EARTH_RADII = 60.2666
+export const MOON_SEMI_MAJOR_AXIS_EARTH_RADII = 60.2666
 const MOON_ECCENTRICITY = 0.0549
 const MOON_INCLINATION_DEG = 5.1454
 const MOON_NODE_AT_J2000_DEG = 125.1228

@@ -28,6 +28,7 @@ import {
   PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
+  MOON_SEMI_MAJOR_AXIS_EARTH_RADII,
   moonGeocentricPositionEarthRadii,
   orbitPathPoints,
   subtract,
@@ -55,6 +56,12 @@ const TYPE_STATION = '#199e70' // aqua
 
 const AU_IN_KM = 149_597_870.7
 const EARTH_RADIUS = 0.5 // scene units — was an oversized 1
+
+// The Moon's real distance is ~60 Earth radii — at true scale (60 * 0.5 =
+// 30 scene units) it would land out past Jupiter's orbit, invisible next to
+// Earth. Compressed to a fixed scene-unit distance instead, same "subway
+// map" trade-off as the outer-planet compression above.
+const MOON_SCENE_ORBIT_RADIUS = 1.8
 const AU_SCALE = 6 // scene units per AU inside the inner system — was 4, more breathing room
 
 // Beyond Mars' neighborhood, real AU distances get compressed (log scale) so
@@ -176,9 +183,10 @@ function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void 
 }
 
 /** Re-centers OrbitControls' orbit point on the selected object's live world
- * position every frame — "focus" means the camera keeps orbiting a moving
- * target instead of the selection just being informational. Keeps the
- * user's current zoom distance; only the orbit center moves. */
+ * position — but only until the user actually touches the controls. A click
+ * still eases the camera onto the target; dragging/pinching afterward stops
+ * the follow immediately instead of fighting free navigation every frame.
+ * Selecting a new target (or the same one again) resumes the follow. */
 function CameraFocus({
   target,
   controlsRef,
@@ -187,9 +195,24 @@ function CameraFocus({
   controlsRef: React.RefObject<OrbitControlsImpl | null>
 }) {
   const worldPos = useMemo(() => new Vector3(), [])
+  const followingRef = useRef(false)
+
+  useEffect(() => {
+    followingRef.current = target !== null
+  }, [target])
+
+  useEffect(() => {
+    const controls = controlsRef.current
+    if (!controls) return
+    const stopFollowing = () => {
+      followingRef.current = false
+    }
+    controls.addEventListener('start', stopFollowing)
+    return () => controls.removeEventListener('start', stopFollowing)
+  }, [controlsRef])
 
   useFrame(() => {
-    if (!target || !controlsRef.current) return
+    if (!target || !followingRef.current || !controlsRef.current) return
     target.getWorldPosition(worldPos)
     controlsRef.current.target.lerp(worldPos, 0.08)
     controlsRef.current.update()
@@ -373,11 +396,10 @@ function Moon() {
   useFrame(() => {
     if (!groupRef.current) return
     const pos = moonGeocentricPositionEarthRadii(clockRef.current)
-    groupRef.current.position.set(
-      pos.x * EARTH_RADIUS,
-      pos.y * EARTH_RADIUS,
-      pos.z * EARTH_RADIUS,
-    )
+    // Uniform scale-down (not a re-normalized circle) — the real orbit's
+    // eccentricity still shows, just compressed to a visible distance.
+    const scale = MOON_SCENE_ORBIT_RADIUS / MOON_SEMI_MAJOR_AXIS_EARTH_RADII
+    groupRef.current.position.set(pos.x * scale, pos.y * scale, pos.z * scale)
   })
 
   return (
@@ -517,6 +539,17 @@ function HeliocentricFrame({ children }: { children: React.ReactNode }) {
   return <group ref={groupRef}>{children}</group>
 }
 
+type MoonConfig = {
+  key: string
+  label: string
+  color: string
+  renderRadius: number
+  sceneOrbitRadius: number
+  periodDays: number
+  realDistanceKm: number
+  realRadiusKm: number
+}
+
 type PlanetConfig = {
   key: PlanetKey
   label: string
@@ -524,6 +557,79 @@ type PlanetConfig = {
   radius: number
   rotationPeriodDays: number
   ring?: boolean
+  moons?: MoonConfig[]
+}
+
+// Real semi-major axis (km) and real sidereal period (days) per moon — the
+// orbit itself is simplified to a flat circle at a fixed, artistically
+// compressed scene radius (same trade-off as the Moon above), starting from
+// an arbitrary phase (no real epoch mean-anomaly data sourced for these).
+// All of these are near-circular in reality (e < 0.03) except Titan
+// (e ≈ 0.029, still small), so "circular" isn't a big distortion of shape —
+// just of absolute distance and starting position.
+const MARS_MOONS: MoonConfig[] = [
+  { key: 'phobos', label: 'Phobos', color: '#8a7f6e', renderRadius: 0.02, sceneOrbitRadius: 0.34, periodDays: 0.31891, realDistanceKm: 9376, realRadiusKm: 11 },
+  { key: 'deimos', label: 'Deimos', color: '#9c9284', renderRadius: 0.018, sceneOrbitRadius: 0.5, periodDays: 1.263, realDistanceKm: 23463, realRadiusKm: 6 },
+]
+
+const JUPITER_MOONS: MoonConfig[] = [
+  { key: 'io', label: 'Io', color: '#e8d27a', renderRadius: 0.09, sceneOrbitRadius: 2.3, periodDays: 1.769, realDistanceKm: 421_700, realRadiusKm: 1821.6 },
+  { key: 'europa', label: 'Europa', color: '#cbb896', renderRadius: 0.08, sceneOrbitRadius: 2.65, periodDays: 3.551, realDistanceKm: 671_034, realRadiusKm: 1560.8 },
+  { key: 'ganymede', label: 'Ganymede', color: '#8f8577', renderRadius: 0.1, sceneOrbitRadius: 3.05, periodDays: 7.155, realDistanceKm: 1_070_412, realRadiusKm: 2634.1 },
+  { key: 'callisto', label: 'Callisto', color: '#5f584d', renderRadius: 0.095, sceneOrbitRadius: 3.55, periodDays: 16.689, realDistanceKm: 1_882_709, realRadiusKm: 2410.3 },
+]
+
+const SATURN_MOONS: MoonConfig[] = [
+  { key: 'titan', label: 'Titan', color: '#d9a441', renderRadius: 0.095, sceneOrbitRadius: 4.3, periodDays: 15.945, realDistanceKm: 1_221_870, realRadiusKm: 2574.7 },
+]
+
+/** A moon of a non-Earth planet — rendered as a child of that <Planet>'s own
+ * group, so it inherits the planet's live heliocentric position for free and
+ * only needs to compute its small local offset. No texture (unlike the 8
+ * planets and Earth's own Moon) — a plain shaded sphere, same treatment as
+ * comets/asteroid markers, to avoid a much larger texture-sourcing pass. */
+function PlanetMoon({ config }: { config: MoonConfig }) {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+  const initialPhaseRad = ((hashId(config.key) % 360) * Math.PI) / 180
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const elapsedDays = clockRef.current - BASE_JULIAN_DATE
+    const angle = initialPhaseRad + (elapsedDays / config.periodDays) * Math.PI * 2
+    groupRef.current.position.set(
+      Math.cos(angle) * config.sceneOrbitRadius,
+      0,
+      Math.sin(angle) * config.sceneOrbitRadius,
+    )
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(
+      {
+        title: config.label,
+        subtitle: 'Moon — real distance/period, circular-orbit approximation',
+        rows: [
+          { label: 'Orbital period', value: `${config.periodDays.toFixed(2)} days` },
+          { label: 'Mean distance', value: `${config.realDistanceKm.toLocaleString()} km` },
+          { label: 'Mean radius', value: `${config.realRadiusKm.toLocaleString()} km` },
+        ],
+      },
+      groupRef.current,
+    )
+  }
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <mesh>
+        <sphereGeometry args={[config.renderRadius, 12, 12]} />
+        <meshStandardMaterial color={config.color} roughness={1} />
+      </mesh>
+      <ClickTarget onClick={handleClick} />
+    </group>
+  )
 }
 
 // Radii follow real Earth-relative size ratios (same "artistic size, real
@@ -536,9 +642,9 @@ type PlanetConfig = {
 const PLANETS: PlanetConfig[] = [
   { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.16, rotationPeriodDays: 58.646 },
   { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.47, rotationPeriodDays: -243.025 },
-  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.24, rotationPeriodDays: 1.02596 },
-  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 1.9, rotationPeriodDays: 0.41354 },
-  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 1.6, rotationPeriodDays: 0.4375, ring: true },
+  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.24, rotationPeriodDays: 1.02596, moons: MARS_MOONS },
+  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 1.9, rotationPeriodDays: 0.41354, moons: JUPITER_MOONS },
+  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 1.6, rotationPeriodDays: 0.4375, ring: true, moons: SATURN_MOONS },
   { key: 'uranus', label: 'Uranus', texture: '/textures/2k_uranus.jpg', radius: 0.78, rotationPeriodDays: -0.71833 },
   { key: 'neptune', label: 'Neptune', texture: '/textures/2k_neptune.jpg', radius: 0.75, rotationPeriodDays: 0.6713 },
 ]
@@ -610,6 +716,7 @@ function Planet({ config }: { config: PlanetConfig }) {
           <meshBasicMaterial color="#c9b896" transparent opacity={0.55} side={BackSide} />
         </mesh>
       ) : null}
+      {config.moons?.map((moon) => <PlanetMoon key={moon.key} config={moon} />)}
     </group>
   )
 }
@@ -1119,7 +1226,7 @@ export function EarthScene() {
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
           <Stars radius={80} depth={40} count={3000} factor={3} fade />
-          <OrbitControls ref={controlsRef} enablePan={false} minDistance={0.7} maxDistance={60} />
+          <OrbitControls ref={controlsRef} enablePan minDistance={0.7} maxDistance={60} />
         </Canvas>
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
         <SatelliteToggle visible={showSatellites} onToggle={() => setShowSatellites((v) => !v)} />
