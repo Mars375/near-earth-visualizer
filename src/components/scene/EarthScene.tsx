@@ -82,6 +82,15 @@ const TYPE_STATION = '#199e70' // aqua
 const AU_IN_KM = 149_597_870.7
 const EARTH_RADIUS = 0.5 // scene units — was an oversized 1
 
+// ISS/Hubble's real LEO altitude is only ~7-8% of Earth's own radius — at
+// true scale their marker, click target, and label all sit essentially on
+// Earth's surface, unclickable and visually indistinguishable from it.
+// Boosts the altitude portion of their position (not the whole radius) so
+// they visibly clear the surface — the same "artistic distance for
+// visibility" trade-off already used for the Moon's orbit, just expanding a
+// too-small real gap instead of compressing a too-large one.
+const NEAR_EARTH_ALTITUDE_BOOST = 8
+
 // The Moon's real distance is ~60 Earth radii — at true scale (60 * 0.5 =
 // 30 scene units) it would land out past Jupiter's orbit, invisible next to
 // Earth. Compressed to a fixed scene-unit distance instead, same "subway
@@ -1072,13 +1081,29 @@ function neoInfo(neo: NearEarthObject): SelectedInfo {
 // instance — cuts what would be dozens of redundant GPU resources to one.
 const CLICK_TARGET_GEOMETRY = new SphereGeometry(0.22, 8, 8)
 const CLICK_TARGET_MATERIAL = new MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+// ISS/Hubble orbit only ~7% of Earth's radius above its surface — the
+// standard 0.22 hit-target nearly overlaps Earth's own surface there,
+// making taps land on Earth instead. A smaller shared target for them.
+const CLICK_TARGET_GEOMETRY_SMALL = new SphereGeometry(0.06, 8, 8)
 
 /** Larger invisible hit-target sitting on top of the small visible marker —
  * asteroids render at true relative scale (often a few pixels), which was
  * unclickable on a touchscreen. The tap target is generously sized;
  * the visible sphere keeps its accurate size. */
-function ClickTarget({ onClick }: { onClick: (event: ThreeEvent<MouseEvent>) => void }) {
-  return <mesh geometry={CLICK_TARGET_GEOMETRY} material={CLICK_TARGET_MATERIAL} onClick={onClick} />
+function ClickTarget({
+  onClick,
+  small = false,
+}: {
+  onClick: (event: ThreeEvent<MouseEvent>) => void
+  small?: boolean
+}) {
+  return (
+    <mesh
+      geometry={small ? CLICK_TARGET_GEOMETRY_SMALL : CLICK_TARGET_GEOMETRY}
+      material={CLICK_TARGET_MATERIAL}
+      onClick={onClick}
+    />
+  )
 }
 
 /** Floating name tag anchored just above an object's own visual top —
@@ -1093,7 +1118,19 @@ function ClickTarget({ onClick }: { onClick: (event: ThreeEvent<MouseEvent>) => 
 // than helpful.
 const LABEL_HIDE_DISTANCE_FACTOR = 3.5
 
-function ObjectLabel({ text, radius }: { text: string; radius: number }) {
+function ObjectLabel({
+  text,
+  radius,
+  occlude = false,
+}: {
+  text: string
+  radius: number
+  /** For objects that sit close in front of/behind a large opaque body
+   * (ISS/Hubble against Earth) — Html has no depth testing by default, so
+   * without this the label floats on top of Earth's disc regardless of
+   * which is actually nearer the camera, reading as "a label on Earth." */
+  occlude?: boolean
+}) {
   const groupRef = useRef<Group>(null)
   const worldPos = useMemo(() => new Vector3(), [])
   const [visible, setVisible] = useState(true)
@@ -1109,7 +1146,7 @@ function ObjectLabel({ text, radius }: { text: string; radius: number }) {
   return (
     <group ref={groupRef} position={[0, radius * 1.4, 0]}>
       {visible ? (
-        <Html center distanceFactor={10} zIndexRange={[0, 0]}>
+        <Html center distanceFactor={10} zIndexRange={[0, 0]} occlude={occlude ? 'blending' : false}>
           <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/75 backdrop-blur-sm">
             {text}
           </div>
@@ -1333,8 +1370,8 @@ function StationMarker({
   return (
     <group ref={ref} position={position}>
       <StationModel />
-      <ClickTarget onClick={handleClick} />
-      <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} />
+      <ClickTarget onClick={handleClick} small />
+      <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} occlude />
     </group>
   )
 }
@@ -1364,7 +1401,7 @@ function IssTracker({ onFix }: { onFix: () => void }) {
   }, [onFix])
 
   if (!fix) return null
-  const [x, y, z] = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm)
+  const [x, y, z] = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm * NEAR_EARTH_ALTITUDE_BOOST)
   const position: [number, number, number] = [x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS]
   return <StationMarker position={position} fix={fix} />
 }
@@ -1428,7 +1465,11 @@ function Hubble() {
     const result = propagate(satrecRef.current, now)
     if (!result || !result.position) return
     const geo = eciToGeodetic(result.position, gstime(now))
-    const [x, y, z] = latLonAltToPosition((geo.latitude * 180) / Math.PI, (geo.longitude * 180) / Math.PI, geo.height)
+    const [x, y, z] = latLonAltToPosition(
+      (geo.latitude * 180) / Math.PI,
+      (geo.longitude * 180) / Math.PI,
+      geo.height * NEAR_EARTH_ALTITUDE_BOOST,
+    )
     groupRef.current.position.set(x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS)
   })
 
@@ -1442,8 +1483,8 @@ function Hubble() {
   return (
     <group ref={groupRef} onClick={handleClick}>
       <HubbleModel />
-      <ClickTarget onClick={handleClick} />
-      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} />
+      <ClickTarget onClick={handleClick} small />
+      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} occlude />
     </group>
   )
 }

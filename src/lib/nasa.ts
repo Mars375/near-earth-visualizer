@@ -119,8 +119,18 @@ export async function fetchUpcomingApproaches(startDate: string, days: number): 
   return approaches
 }
 
-export async function fetchNearEarthObjects(date: string): Promise<NearEarthObject[]> {
-  const url = `${NASA_API_BASE}/feed?start_date=${date}&end_date=${date}&api_key=${apiKey()}`
+/**
+ * `days`: a single day's feed is often just 0-2 objects — not much of a
+ * "field" to look at or tap on. Defaults to a 3-day window (still well
+ * within a real API key's hourly quota, given each object costs one more
+ * lookup call below) for a noticeably fuller scene.
+ */
+export async function fetchNearEarthObjects(date: string, days = 3): Promise<NearEarthObject[]> {
+  const end = new Date(`${date}T00:00:00Z`)
+  end.setUTCDate(end.getUTCDate() + days - 1)
+  const endDate = end.toISOString().slice(0, 10)
+
+  const url = `${NASA_API_BASE}/feed?start_date=${date}&end_date=${endDate}&api_key=${apiKey()}`
 
   const response = await fetch(url, { next: { revalidate: 3600 } })
   if (!response.ok) {
@@ -128,7 +138,7 @@ export async function fetchNearEarthObjects(date: string): Promise<NearEarthObje
   }
 
   const data = (await response.json()) as NeoWsFeedResponse
-  const objects = data.near_earth_objects[date] ?? []
+  const objects = Object.values(data.near_earth_objects).flat()
 
   return Promise.all(
     objects.map(async (neo) => {
