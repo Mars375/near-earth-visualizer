@@ -14,6 +14,9 @@ import { Line, OrbitControls, Stars, useTexture } from '@react-three/drei'
 import {
   AdditiveBlending,
   BackSide,
+  MeshBasicMaterial,
+  MeshStandardMaterial,
+  SphereGeometry,
   Vector3,
   type DirectionalLight,
   type Group,
@@ -45,6 +48,23 @@ import { SatelliteConstellation } from './SatelliteConstellation'
 // the asteroid hazard flag only, never reused for arbitrary series identity.
 const STATUS_HAZARDOUS = '#d03b3b' // critical
 const STATUS_SAFE = '#0ca30c' // good
+
+// Near-Earth object markers only ever need one of two materials (hazardous/
+// safe) and one sphere shape (real size varies, so it's applied via mesh
+// scale, not a distinct geometry per object) — a NASA feed can return
+// several dozen objects a day, so sharing these instead of instantiating
+// per-marker avoids dozens of redundant GPU resources.
+const NEO_MARKER_GEOMETRY = new SphereGeometry(1, 12, 12)
+const NEO_MATERIAL_HAZARDOUS = new MeshStandardMaterial({
+  color: STATUS_HAZARDOUS,
+  emissive: STATUS_HAZARDOUS,
+  emissiveIntensity: 0.4,
+})
+const NEO_MATERIAL_SAFE = new MeshStandardMaterial({
+  color: STATUS_SAFE,
+  emissive: STATUS_SAFE,
+  emissiveIntensity: 0.4,
+})
 
 // Categorical object-type colors — first 3 slots of the dataviz skill's
 // default palette, the only ones that pass the all-pairs CVD check (any two
@@ -754,7 +774,7 @@ function OrbitRing({
   opacity?: number
 }) {
   const points = useMemo(
-    () => orbitPathPoints(elements, 160).map((p) => toScenePosition(p)),
+    () => orbitPathPoints(elements, 96).map((p) => toScenePosition(p)),
     [elements],
   )
   return <Line points={points} color={color} transparent opacity={opacity} lineWidth={1} />
@@ -768,7 +788,7 @@ function OrbitRing({
 function MoonOrbitRing() {
   const points = useMemo(
     () =>
-      orbitPathPoints(moonOrbitalElements(BASE_JULIAN_DATE), 128).map(
+      orbitPathPoints(moonOrbitalElements(BASE_JULIAN_DATE), 72).map(
         (p): [number, number, number] => [p.x * MOON_ORBIT_SCALE, p.y * MOON_ORBIT_SCALE, p.z * MOON_ORBIT_SCALE],
       ),
     [],
@@ -939,17 +959,19 @@ function neoInfo(neo: NearEarthObject): SelectedInfo {
   }
 }
 
+// Every clickable object (planets, moons, comets, asteroids, ISS — dozens of
+// instances) mounts one of these. Identical geometry/material each time, so
+// one shared pair is created once at module scope instead of once per
+// instance — cuts what would be dozens of redundant GPU resources to one.
+const CLICK_TARGET_GEOMETRY = new SphereGeometry(0.22, 8, 8)
+const CLICK_TARGET_MATERIAL = new MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+
 /** Larger invisible hit-target sitting on top of the small visible marker —
  * asteroids render at true relative scale (often a few pixels), which was
  * unclickable on a touchscreen. The tap target is generously sized;
  * the visible sphere keeps its accurate size. */
 function ClickTarget({ onClick }: { onClick: (event: ThreeEvent<MouseEvent>) => void }) {
-  return (
-    <mesh onClick={onClick}>
-      <sphereGeometry args={[0.22, 8, 8]} />
-      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-    </mesh>
-  )
+  return <mesh geometry={CLICK_TARGET_GEOMETRY} material={CLICK_TARGET_MATERIAL} onClick={onClick} />
 }
 
 function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
@@ -982,10 +1004,11 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
           introducing a new ring color for asteroids. */}
       <OrbitRing elements={orbit} color={color} opacity={0.1} />
       <group ref={groupRef}>
-        <mesh>
-          <sphereGeometry args={[radius, 12, 12]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
-        </mesh>
+        <mesh
+          geometry={NEO_MARKER_GEOMETRY}
+          material={neo.isPotentiallyHazardous ? NEO_MATERIAL_HAZARDOUS : NEO_MATERIAL_SAFE}
+          scale={radius}
+        />
         <ClickTarget onClick={handleClick} />
       </group>
     </>
@@ -997,7 +1020,7 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
  * visual cue that this path is approximated, not measured. */
 function FallbackOrbitRing({ orbit, color }: { orbit: FallbackOrbit; color: string }) {
   const points = useMemo(() => {
-    const segments = 96
+    const segments = 64
     const pts: [number, number, number][] = []
     for (let i = 0; i <= segments; i += 1) {
       const theta = (i / segments) * Math.PI * 2
@@ -1044,10 +1067,11 @@ function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number
     <>
       <FallbackOrbitRing orbit={orbit} color={color} />
       <group ref={groupRef}>
-        <mesh>
-          <sphereGeometry args={[radius, 12, 12]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.4} />
-        </mesh>
+        <mesh
+          geometry={NEO_MARKER_GEOMETRY}
+          material={neo.isPotentiallyHazardous ? NEO_MATERIAL_HAZARDOUS : NEO_MATERIAL_SAFE}
+          scale={radius}
+        />
         <ClickTarget onClick={handleClick} />
       </group>
     </>
@@ -1291,7 +1315,11 @@ export function EarthScene() {
         <Canvas
           camera={{ position: [3, 2, 9], fov: 45, near: 0.01, far: 200 }}
           gl={{ antialias: true, powerPreference: 'high-performance' }}
-          dpr={[1, 2]}
+          // Capped below the usual [1,2] — fragment cost (day/night shader,
+          // atmosphere/sun-glow additive passes) scales with dpr², so 2x on a
+          // 3x-DPR phone was ~78% more fill-rate than 1.5x for a sharpness
+          // difference nobody's going to see on a phone screen.
+          dpr={[1, 1.5]}
           onPointerMissed={() => {
             setSelected(null)
             setFocusTarget(null)
