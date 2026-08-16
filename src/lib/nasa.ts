@@ -79,6 +79,46 @@ async function fetchOrbitalElements(id: string): Promise<OrbitalElements | null>
  * per-object lookup endpoint (needs a real NASA_API_KEY — DEMO_KEY's 30
  * req/hour limit can't cover a day's worth of objects).
  */
+export type UpcomingApproach = {
+  name: string
+  date: string
+  missDistanceKm: number
+  isPotentiallyHazardous: boolean
+}
+
+/**
+ * Feed-only summary across a multi-day window (no per-object orbital
+ * lookup — that's only needed to actually plot an orbit, not for a
+ * one-line "closest approach this week" stat).
+ */
+export async function fetchUpcomingApproaches(startDate: string, days: number): Promise<UpcomingApproach[]> {
+  const end = new Date(`${startDate}T00:00:00Z`)
+  end.setUTCDate(end.getUTCDate() + days - 1)
+  const endDate = end.toISOString().slice(0, 10)
+
+  const url = `${NASA_API_BASE}/feed?start_date=${startDate}&end_date=${endDate}&api_key=${apiKey()}`
+  const response = await fetch(url, { next: { revalidate: 3600 } })
+  if (!response.ok) {
+    throw new Error(`NASA NeoWs request failed: ${response.status} ${response.statusText}`)
+  }
+
+  const data = (await response.json()) as NeoWsFeedResponse
+  const approaches: UpcomingApproach[] = []
+  for (const dayObjects of Object.values(data.near_earth_objects)) {
+    for (const neo of dayObjects) {
+      const approach = neo.close_approach_data[0]
+      if (!approach) continue
+      approaches.push({
+        name: neo.name,
+        date: approach.close_approach_date,
+        missDistanceKm: Number(approach.miss_distance.kilometers),
+        isPotentiallyHazardous: neo.is_potentially_hazardous_asteroid,
+      })
+    }
+  }
+  return approaches
+}
+
 export async function fetchNearEarthObjects(date: string): Promise<NearEarthObject[]> {
   const url = `${NASA_API_BASE}/feed?start_date=${date}&end_date=${date}&api_key=${apiKey()}`
 

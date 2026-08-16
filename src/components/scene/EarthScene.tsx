@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react'
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
-import { Line, OrbitControls, Stars, useGLTF, useTexture } from '@react-three/drei'
+import { Html, Line, OrbitControls, Stars, useGLTF, useTexture } from '@react-three/drei'
 import {
   AdditiveBlending,
   BackSide,
@@ -473,6 +473,7 @@ function Moon() {
           select(MOON_INFO, groupRef.current)
         }}
       />
+      <ObjectLabel text="Moon" radius={0.035} />
     </group>
   )
 }
@@ -566,6 +567,7 @@ function Sun() {
           side={BackSide}
         />
       </mesh>
+      <ObjectLabel text="Sun" radius={0.55} />
     </group>
   )
 }
@@ -779,6 +781,7 @@ function Planet({ config }: { config: PlanetConfig }) {
           <PlanetMoon config={moon} />
         </group>
       ))}
+      <ObjectLabel text={config.label} radius={config.radius} />
     </group>
   )
 }
@@ -917,6 +920,7 @@ function Comet({ config }: { config: CometConfig }) {
         />
       </mesh>
       <ClickTarget onClick={handleClick} />
+      <ObjectLabel text={config.label} radius={0.06} />
     </group>
   )
 }
@@ -995,6 +999,24 @@ const CLICK_TARGET_MATERIAL = new MeshBasicMaterial({ transparent: true, opacity
  * the visible sphere keeps its accurate size. */
 function ClickTarget({ onClick }: { onClick: (event: ThreeEvent<MouseEvent>) => void }) {
   return <mesh geometry={CLICK_TARGET_GEOMETRY} material={CLICK_TARGET_MATERIAL} onClick={onClick} />
+}
+
+/** Floating name tag anchored just above an object's own visual top —
+ * without this, most objects are indistinguishable points until tapped.
+ * Reserved for headline objects (Sun, planets, Earth's Moon, comets, ISS) —
+ * per-moon-of-a-planet or per-asteroid labels would just clutter the view.
+ * distanceFactor shrinks the label with distance so it never dominates the
+ * frame up close or vanishes zoomed out. */
+function ObjectLabel({ text, radius }: { text: string; radius: number }) {
+  return (
+    <group position={[0, radius * 1.4, 0]}>
+      <Html center distanceFactor={10} zIndexRange={[0, 0]}>
+        <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/75 backdrop-blur-sm">
+          {text}
+        </div>
+      </Html>
+    </group>
+  )
 }
 
 function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
@@ -1211,6 +1233,7 @@ function StationMarker({
     <group ref={ref} position={position}>
       <StationModel />
       <ClickTarget onClick={handleClick} />
+      <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} />
     </group>
   )
 }
@@ -1324,6 +1347,67 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
   )
 }
 
+type UpcomingApproach = {
+  name: string
+  date: string
+  missDistanceKm: number
+  isPotentiallyHazardous: boolean
+}
+
+function formatApproachDate(dateStr: string): string {
+  const date = new Date(`${dateStr}T00:00:00Z`)
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+}
+
+/** One real, already-fetched-elsewhere NASA stat surfaced as a small always-
+ * on hook — the closest tracked approach in the coming week, updated once
+ * per mount. Compact by design (see the legend's own space complaint on
+ * mobile): a single line, no expand state, nothing to manage. */
+function NextApproachTicker() {
+  const [approach, setApproach] = useState<UpcomingApproach | null>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/next-approach')
+      .then((res) => res.json())
+      .then((data: { approach: UpcomingApproach | null }) => {
+        if (!cancelled) setApproach(data.approach)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!approach) return null
+
+  const millionKm = (approach.missDistanceKm / 1_000_000).toFixed(1)
+  const color = approach.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
+
+  // Stacked above the legend pill at the bottom-left, not top-left — the
+  // Sun auto-selects on mount, so the info panel is up there by default and
+  // a top-anchored ticker either got cut off under it or had to fight it
+  // for width on a phone screen. Collapsed by default like the legend, for
+  // the same reason.
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      className="pointer-events-auto absolute bottom-14 left-3 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-2.5 py-1.5 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
+    >
+      <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
+      {expanded ? (
+        <span className="truncate">
+          {approach.name} · {millionKm}M km · {formatApproachDate(approach.date)}
+        </span>
+      ) : (
+        <span>{millionKm}M km this week</span>
+      )}
+    </button>
+  )
+}
+
 function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('realtime')
 
@@ -1418,6 +1502,7 @@ export function EarthScene() {
           <OrbitControls ref={controlsRef} enablePan minDistance={0.7} maxDistance={60} />
         </Canvas>
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
+        <NextApproachTicker />
         <SatelliteToggle visible={showSatellites} onToggle={() => setShowSatellites((v) => !v)} />
         <TimeControl speedRef={speedBox} />
         {selected ? (
