@@ -45,6 +45,7 @@ import {
 } from '@/lib/orbitalMechanics'
 import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
 import { SatelliteConstellation } from './SatelliteConstellation'
+import { eciToGeodetic, gstime, propagate, twoline2satrec, type SatRec } from 'satellite.js'
 
 // Status colors from the dataviz skill's fixed status palette — reserved for
 // the asteroid hazard flag only, never reused for arbitrary series identity.
@@ -684,6 +685,7 @@ function PlanetMoon({ config }: { config: MoonConfig }) {
         <meshStandardMaterial color={config.color} roughness={1} />
       </mesh>
       <ClickTarget onClick={handleClick} />
+      <ObjectLabel text={config.label} radius={config.renderRadius} />
     </group>
   )
 }
@@ -1055,6 +1057,7 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
           scale={radius}
         />
         <ClickTarget onClick={handleClick} />
+        <ObjectLabel text={neo.name} radius={radius} />
       </group>
     </>
   )
@@ -1118,6 +1121,7 @@ function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number
           scale={radius}
         />
         <ClickTarget onClick={handleClick} />
+        <ObjectLabel text={neo.name} radius={radius} />
       </group>
     </>
   )
@@ -1147,29 +1151,25 @@ function FallbackNeoField({ objects }: { objects: NearEarthObject[] }) {
 // Space station (ISS) — Earth-relative, not heliocentric
 // ---------------------------------------------------------------------------
 
-/** Simple procedural silhouette (central truss + solar-panel wings) instead
- * of a plain ring — reads as "a station," not just a generic marker. NASA's
- * official ISS model exists (science.nasa.gov) but is a 42MB glTF, too heavy
- * to load into a scene meant to run on a phone; a real lightweight model is
- * a good follow-up if that trade-off is worth it later. */
+// Real NASA/Ames geometry (nasa/NASA-3D-Resources, public domain — 6,628
+// polygons, 38KB as glTF), not a procedural stand-in.
 const ISS_MODEL_URL = '/models/iss.glb'
-// Scene-unit footprint the real model gets normalized to — comparable size
-// to the old procedural marker, not a claim of true relative scale (the ISS
-// is ~109m across; at Earth's true relative size that'd be sub-pixel).
+// Scene-unit footprint the real model gets normalized to — not a claim of
+// true relative scale (the ISS is ~109m across; at Earth's true relative
+// size that'd be sub-pixel).
 const ISS_TARGET_SIZE = 0.13
 
 useGLTF.preload(ISS_MODEL_URL)
 
-/** Real NASA/Ames geometry (nasa/NASA-3D-Resources, public domain — 6,628
- * polygons, 38KB as glTF), not a procedural stand-in. Export units/origin
- * are unknown ahead of time, so this normalizes on load: measures its own
- * bounding box, uniformly scales its longest axis to ISS_TARGET_SIZE, and
+/** Shared by every real glTF model in the scene (ISS, Hubble): export
+ * units/origin aren't known ahead of time, so this measures its own
+ * bounding box, uniformly scales the longest axis to targetSize, and
  * recenters on its own centroid rather than the export's arbitrary origin.
- * A faint emissive tint (much weaker than the old procedural marker's) keeps
- * it visible while in Earth's shadow, without washing out the real geometry. */
-function StationModel() {
-  const { scene } = useGLTF(ISS_MODEL_URL)
-  const model = useMemo(() => {
+ * A faint emissive tint keeps it visible in Earth's shadow without washing
+ * out the real geometry. */
+function useNormalizedModel(url: string, targetSize: number, tintColor: string, tintIntensity: number): Group {
+  const { scene } = useGLTF(url)
+  return useMemo(() => {
     const clone = scene.clone(true)
     const box = new Box3().setFromObject(clone)
     const size = new Vector3()
@@ -1177,7 +1177,7 @@ function StationModel() {
     box.getSize(size)
     box.getCenter(center)
     const maxDim = Math.max(size.x, size.y, size.z) || 1
-    const scale = ISS_TARGET_SIZE / maxDim
+    const scale = targetSize / maxDim
     clone.scale.setScalar(scale)
     clone.position.set(-center.x * scale, -center.y * scale, -center.z * scale)
     clone.traverse((child) => {
@@ -1185,14 +1185,17 @@ function StationModel() {
       if (mesh.isMesh && mesh.material) {
         const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as MeshStandardMaterial
         if (material.emissive) {
-          material.emissive.set(TYPE_STATION)
-          material.emissiveIntensity = 0.15
+          material.emissive.set(tintColor)
+          material.emissiveIntensity = tintIntensity
         }
       }
     })
     return clone
-  }, [scene])
+  }, [scene, targetSize, tintColor, tintIntensity])
+}
 
+function StationModel() {
+  const model = useNormalizedModel(ISS_MODEL_URL, ISS_TARGET_SIZE, TYPE_STATION, 0.15)
   return <primitive object={model} />
 }
 
@@ -1266,6 +1269,85 @@ function IssTracker({ onFix }: { onFix: () => void }) {
   const [x, y, z] = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm)
   const position: [number, number, number] = [x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS]
   return <StationMarker position={position} fix={fix} />
+}
+
+// ---------------------------------------------------------------------------
+// Hubble — real TLE (NORAD 20580) via Celestrak, same satellite.js/SGP4
+// pipeline as the Starlink field, just for one object.
+// ---------------------------------------------------------------------------
+
+const HUBBLE_MODEL_URL = '/models/hubble.glb'
+const HUBBLE_TARGET_SIZE = 0.11
+// Real gold-foil thermal blanket — Hubble's own actual color, not a picked
+// accent. Deliberately distinct from the ISS's TYPE_STATION aqua.
+const HUBBLE_COLOR = '#c9a227'
+
+useGLTF.preload(HUBBLE_MODEL_URL)
+
+function HubbleModel() {
+  const model = useNormalizedModel(HUBBLE_MODEL_URL, HUBBLE_TARGET_SIZE, HUBBLE_COLOR, 0.15)
+  return <primitive object={model} />
+}
+
+const HUBBLE_INFO: SelectedInfo = {
+  title: 'Hubble',
+  subtitle: 'Hubble Space Telescope — live TLE',
+  rows: [
+    { label: 'Orbit altitude', value: '~535 km (LEO)' },
+    { label: 'Orbital period', value: '~95 min' },
+    { label: 'Launched', value: '1990' },
+  ],
+}
+
+/** Propagated with real orbital state (SGP4), refreshed every frame like the
+ * Starlink field — but anchored to real wall-clock time, not the app's
+ * adjustable simulation clock, for the same reason as the satellites: a TLE
+ * is only valid near its real epoch. */
+function Hubble() {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const satrecRef = useRef<SatRec | null>(null)
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/hubble')
+      .then((res) => res.json())
+      .then((data: { tle: { line1: string; line2: string } | null }) => {
+        if (cancelled || !data.tle) return
+        satrecRef.current = twoline2satrec(data.tle.line1, data.tle.line2)
+        setReady(true)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useFrame(() => {
+    if (!groupRef.current || !satrecRef.current) return
+    const now = new Date()
+    const result = propagate(satrecRef.current, now)
+    if (!result || !result.position) return
+    const geo = eciToGeodetic(result.position, gstime(now))
+    const [x, y, z] = latLonAltToPosition((geo.latitude * 180) / Math.PI, (geo.longitude * 180) / Math.PI, geo.height)
+    groupRef.current.position.set(x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS)
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(HUBBLE_INFO, groupRef.current)
+  }
+
+  if (!ready) return null
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <HubbleModel />
+      <ClickTarget onClick={handleClick} />
+      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} />
+    </group>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,6 +1577,7 @@ export function EarthScene() {
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />
             <IssTracker onFix={() => setIssTracked(true)} />
+            <Hubble />
             <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
