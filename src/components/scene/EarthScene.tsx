@@ -525,14 +525,21 @@ type PlanetConfig = {
   ring?: boolean
 }
 
+// Radii follow real Earth-relative size ratios (same "artistic size, real
+// distance" trade-off as the Sun/Earth/Moon), tempered down for the gas
+// giants so they don't overrun the gap to their neighbors at this AU_SCALE —
+// true scale (Jupiter ~11x Earth's radius) would overlap Mars's orbit. Order
+// and rough proportion are preserved: Venus is deliberately close to Earth's
+// own size (real ratio 0.95), and Mars is bigger than Mercury (real ratio
+// 0.53 vs 0.38) — both were previously inverted/flattened here.
 const PLANETS: PlanetConfig[] = [
-  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.045, rotationPeriodDays: 58.646 },
-  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.065, rotationPeriodDays: -243.025 },
-  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.04, rotationPeriodDays: 1.02596 },
-  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 0.22, rotationPeriodDays: 0.41354 },
-  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 0.19, rotationPeriodDays: 0.4375, ring: true },
-  { key: 'uranus', label: 'Uranus', texture: '/textures/2k_uranus.jpg', radius: 0.12, rotationPeriodDays: -0.71833 },
-  { key: 'neptune', label: 'Neptune', texture: '/textures/2k_neptune.jpg', radius: 0.115, rotationPeriodDays: 0.6713 },
+  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.16, rotationPeriodDays: 58.646 },
+  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.47, rotationPeriodDays: -243.025 },
+  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.24, rotationPeriodDays: 1.02596 },
+  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 1.9, rotationPeriodDays: 0.41354 },
+  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 1.6, rotationPeriodDays: 0.4375, ring: true },
+  { key: 'uranus', label: 'Uranus', texture: '/textures/2k_uranus.jpg', radius: 0.78, rotationPeriodDays: -0.71833 },
+  { key: 'neptune', label: 'Neptune', texture: '/textures/2k_neptune.jpg', radius: 0.75, rotationPeriodDays: 0.6713 },
 ]
 
 /** A real neighboring planet, positioned at its own live heliocentric
