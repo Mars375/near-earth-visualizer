@@ -10,10 +10,11 @@ import {
   useState,
 } from 'react'
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
-import { Line, OrbitControls, Stars, useTexture } from '@react-three/drei'
+import { Line, OrbitControls, Stars, useGLTF, useTexture } from '@react-three/drei'
 import {
   AdditiveBlending,
   BackSide,
+  Box3,
   MeshBasicMaterial,
   MeshStandardMaterial,
   SphereGeometry,
@@ -1107,6 +1108,50 @@ function FallbackNeoField({ objects }: { objects: NearEarthObject[] }) {
  * official ISS model exists (science.nasa.gov) but is a 42MB glTF, too heavy
  * to load into a scene meant to run on a phone; a real lightweight model is
  * a good follow-up if that trade-off is worth it later. */
+const ISS_MODEL_URL = '/models/iss.glb'
+// Scene-unit footprint the real model gets normalized to — comparable size
+// to the old procedural marker, not a claim of true relative scale (the ISS
+// is ~109m across; at Earth's true relative size that'd be sub-pixel).
+const ISS_TARGET_SIZE = 0.13
+
+useGLTF.preload(ISS_MODEL_URL)
+
+/** Real NASA/Ames geometry (nasa/NASA-3D-Resources, public domain — 6,628
+ * polygons, 38KB as glTF), not a procedural stand-in. Export units/origin
+ * are unknown ahead of time, so this normalizes on load: measures its own
+ * bounding box, uniformly scales its longest axis to ISS_TARGET_SIZE, and
+ * recenters on its own centroid rather than the export's arbitrary origin.
+ * A faint emissive tint (much weaker than the old procedural marker's) keeps
+ * it visible while in Earth's shadow, without washing out the real geometry. */
+function StationModel() {
+  const { scene } = useGLTF(ISS_MODEL_URL)
+  const model = useMemo(() => {
+    const clone = scene.clone(true)
+    const box = new Box3().setFromObject(clone)
+    const size = new Vector3()
+    const center = new Vector3()
+    box.getSize(size)
+    box.getCenter(center)
+    const maxDim = Math.max(size.x, size.y, size.z) || 1
+    const scale = ISS_TARGET_SIZE / maxDim
+    clone.scale.setScalar(scale)
+    clone.position.set(-center.x * scale, -center.y * scale, -center.z * scale)
+    clone.traverse((child) => {
+      const mesh = child as Mesh
+      if (mesh.isMesh && mesh.material) {
+        const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as MeshStandardMaterial
+        if (material.emissive) {
+          material.emissive.set(TYPE_STATION)
+          material.emissiveIntensity = 0.15
+        }
+      }
+    })
+    return clone
+  }, [scene])
+
+  return <primitive object={model} />
+}
+
 function StationMarker({
   position,
   fix,
@@ -1117,7 +1162,7 @@ function StationMarker({
   const ref = useRef<Group>(null)
   const select = useSelect()
   useFrame((_, delta) => {
-    if (ref.current) ref.current.rotation.y += delta * 0.4
+    if (ref.current) ref.current.rotation.y += delta * 0.15
   })
 
   const handleClick = useCallback(
@@ -1142,18 +1187,7 @@ function StationMarker({
 
   return (
     <group ref={ref} position={position}>
-      <mesh rotation={[0, 0, Math.PI / 2]}>
-        <cylinderGeometry args={[0.008, 0.008, 0.09, 8]} />
-        <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.6} />
-      </mesh>
-      <mesh position={[0.055, 0, 0]}>
-        <boxGeometry args={[0.05, 0.018, 0.002]} />
-        <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.8} />
-      </mesh>
-      <mesh position={[-0.055, 0, 0]}>
-        <boxGeometry args={[0.05, 0.018, 0.002]} />
-        <meshStandardMaterial color={TYPE_STATION} emissive={TYPE_STATION} emissiveIntensity={0.8} />
-      </mesh>
+      <StationModel />
       <ClickTarget onClick={handleClick} />
     </group>
   )
