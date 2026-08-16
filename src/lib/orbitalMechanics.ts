@@ -187,6 +187,26 @@ export function earthHeliocentricPosition(julianDate: number): Vec3 {
   return heliocentricPosition(PLANETARY_ELEMENTS.earth, julianDate)
 }
 
+// JWST orbits the Sun-Earth L2 point — real distance ~1.5 million km
+// (0.01 AU) from Earth, on the side directly away from the Sun. Modeled as
+// exactly that fixed point along the Sun-Earth line, NOT JWST's actual halo
+// orbit around L2 (a real ~6-month loop with ~250,000km amplitude) — a
+// disclosed simplification, not a claim that JWST sits motionless relative
+// to Earth.
+export const JWST_L2_DISTANCE_AU = 1_500_000 / 149_597_870.7
+
+/** `boost` artificially inflates the (tiny, ~0.01 AU) Earth-offset for scene
+ * visibility — same reasoning as the ISS/Hubble altitude boost in the scene
+ * layer, just done here since AU-scale math is this module's job. Earth's
+ * own ~1 AU distance is untouched, so this only pushes JWST farther from
+ * Earth, not the whole system out of place. */
+export function jwstPosition(julianDate: number, boost = 1): Vec3 {
+  const earthPos = earthHeliocentricPosition(julianDate)
+  const earthDistanceAu = Math.hypot(earthPos.x, earthPos.y, earthPos.z) || 1e-9
+  const scale = (earthDistanceAu + JWST_L2_DISTANCE_AU * boost) / earthDistanceAu
+  return { x: earthPos.x * scale, y: earthPos.y * scale, z: earthPos.z * scale }
+}
+
 // Moon — Paul Schlyter's well-known low-precision geocentric formula
 // (stjarnhimlen.se/comp/tutorial.html). Unlike the planets, the Moon's
 // ascending node and argument of perigee aren't fixed — they precess

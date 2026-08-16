@@ -42,6 +42,7 @@ import {
   orbitPathPoints,
   subtract,
   unixMsToJulianDate,
+  jwstPosition,
   voyagerPosition,
   type CometKey,
   type DwarfPlanetKey,
@@ -1221,6 +1222,69 @@ function VoyagerField() {
 }
 
 // ---------------------------------------------------------------------------
+// JWST — real position at the Sun-Earth L2 point (see jwstPosition in
+// orbitalMechanics.ts for the fixed-point-vs-halo-orbit simplification).
+// Lives inside <HeliocentricFrame> like the planets/comets, not as an
+// Earth-geocentric sibling — its offset is heliocentric-scale AU math, not
+// a lat/lon/altitude fix like the ISS.
+// ---------------------------------------------------------------------------
+
+const JWST_MODEL_URL = '/models/jwst.glb'
+const JWST_TARGET_SIZE = 0.1
+const JWST_COLOR = '#e8d9b8' // real gold-coated beryllium mirror segments
+const JWST_SCENE_BOOST = 15
+
+useGLTF.preload(JWST_MODEL_URL)
+
+function JwstModel() {
+  const model = useNormalizedModel(JWST_MODEL_URL, JWST_TARGET_SIZE, JWST_COLOR, 0.2)
+  return <primitive object={model} />
+}
+
+const JWST_INFO: SelectedInfo = {
+  title: 'JWST',
+  subtitle: 'James Webb Space Telescope — Sun-Earth L2 point',
+  rows: [
+    { label: 'Distance from Earth', value: '~1.5M km (L2)' },
+    { label: 'Launched', value: '2021' },
+    { label: 'Note', value: 'Real point, not real halo orbit' },
+  ],
+}
+
+function Jwst() {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = jwstPosition(clockRef.current, JWST_SCENE_BOOST)
+    const [x, y, z] = toScenePosition(pos)
+    groupRef.current.position.set(x, y, z)
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(JWST_INFO, groupRef.current, JWST_TARGET_SIZE)
+  }
+
+  useRegisterObject({
+    key: 'jwst',
+    label: 'JWST',
+    category: 'Deep space',
+    onSelect: () => select(JWST_INFO, groupRef.current, JWST_TARGET_SIZE),
+  })
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <JwstModel />
+      <ClickTarget onClick={handleClick} small />
+      <ObjectLabel text="JWST" radius={JWST_TARGET_SIZE} />
+    </group>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Near-Earth objects
 // ---------------------------------------------------------------------------
 
@@ -2020,6 +2084,7 @@ export function EarthScene() {
               <CometField />
               <VoyagerField />
               <DwarfPlanetField />
+              <Jwst />
               <HelioNeoField objects={trackedObjects} />
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />
