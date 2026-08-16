@@ -14,7 +14,7 @@
     "next": "16.3.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "satellite.js": "^7.1.0",
+    "satellite.js": "^6.0.2",
     "sharp": "^0.35.3",
     "three": "^0.185.1"
   },
