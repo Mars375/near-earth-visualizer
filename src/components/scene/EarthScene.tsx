@@ -193,6 +193,73 @@ function useSelect() {
   return useContext(SelectionContext)
 }
 
+// ---------------------------------------------------------------------------
+// Object registry — every selectable object registers itself here so the
+// jump-to menu can list and select anything without relying on the user
+// precisely tapping a (sometimes tiny, sometimes fast-moving) 3D target.
+// ---------------------------------------------------------------------------
+
+type RegistryEntry = { key: string; label: string; category: string; onSelect: () => void }
+
+const RegistryContext = createContext<{
+  register: (entry: RegistryEntry) => void
+  unregister: (key: string) => void
+} | null>(null)
+
+/** Registers on mount, unregisters on unmount — `onSelect` is read fresh
+ * each render via a ref so the registry entry never goes stale without
+ * needing to re-register every time (e.g. when `select` or the object's
+ * own info changes identity). */
+function useRegisterObject(entry: RegistryEntry) {
+  const ctx = useContext(RegistryContext)
+  const entryRef = useRef(entry)
+
+  useEffect(() => {
+    entryRef.current = entry
+  })
+
+  useEffect(() => {
+    if (!ctx) return
+    const stableEntry: RegistryEntry = {
+      key: entry.key,
+      label: entry.label,
+      category: entry.category,
+      onSelect: () => entryRef.current.onSelect(),
+    }
+    ctx.register(stableEntry)
+    return () => ctx.unregister(entry.key)
+  }, [ctx, entry.key, entry.label, entry.category])
+}
+
+function RegistryProvider({
+  children,
+  onEntriesChange,
+}: {
+  children: React.ReactNode
+  onEntriesChange: (entries: RegistryEntry[]) => void
+}) {
+  const entriesRef = useRef<RegistryEntry[]>([])
+
+  const register = useCallback(
+    (entry: RegistryEntry) => {
+      entriesRef.current = [...entriesRef.current.filter((e) => e.key !== entry.key), entry]
+      onEntriesChange(entriesRef.current)
+    },
+    [onEntriesChange],
+  )
+  const unregister = useCallback(
+    (key: string) => {
+      entriesRef.current = entriesRef.current.filter((e) => e.key !== key)
+      onEntriesChange(entriesRef.current)
+    },
+    [onEntriesChange],
+  )
+
+  const ctxValue = useMemo(() => ({ register, unregister }), [register, unregister])
+
+  return <RegistryContext.Provider value={ctxValue}>{children}</RegistryContext.Provider>
+}
+
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
     <div className="pointer-events-auto absolute right-4 top-16 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
@@ -235,24 +302,9 @@ function CameraFocus({
   controlsRef: React.RefObject<OrbitControlsImpl | null>
 }) {
   const worldPos = useMemo(() => new Vector3(), [])
-  const followingRef = useRef(false)
-
-  useEffect(() => {
-    followingRef.current = target !== null
-  }, [target])
-
-  useEffect(() => {
-    const controls = controlsRef.current
-    if (!controls) return
-    const stopFollowing = () => {
-      followingRef.current = false
-    }
-    controls.addEventListener('start', stopFollowing)
-    return () => controls.removeEventListener('start', stopFollowing)
-  }, [controlsRef])
 
   useFrame(() => {
-    if (!target || !followingRef.current || !controlsRef.current) return
+    if (!target || !controlsRef.current) return
     target.getWorldPosition(worldPos)
     controlsRef.current.target.lerp(worldPos, 0.08)
     controlsRef.current.update()
@@ -364,11 +416,28 @@ const EARTH_AXIAL_TILT_QUATERNION = new Quaternion().setFromUnitVectors(
   ).normalize(),
 )
 
+const EARTH_INFO: SelectedInfo = {
+  title: 'Earth',
+  subtitle: 'Home planet — scene reference point',
+  rows: [
+    { label: 'Mean radius', value: '6,371 km' },
+    { label: 'Orbital period', value: '365.25 days' },
+    { label: 'Rotation period', value: '23h 56m' },
+  ],
+}
+
 function Earth() {
   const meshRef = useRef<Mesh>(null)
   const materialRef = useRef<ShaderMaterial>(null)
   const select = useSelect()
   const clockRef = useSimulationClock()
+
+  useRegisterObject({
+    key: 'earth',
+    label: 'Earth',
+    category: 'Planets',
+    onSelect: () => select(EARTH_INFO, meshRef.current),
+  })
   // Real daily satellite mosaic (NASA GIBS) instead of a static generic map.
   const [dayMap, nightMap] = useTexture(['/api/earth-imagery', '/textures/2k_earth_nightmap.jpg'])
 
@@ -405,18 +474,7 @@ function Earth() {
       quaternion={EARTH_AXIAL_TILT_QUATERNION}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select(
-          {
-            title: 'Earth',
-            subtitle: 'Home planet — scene reference point',
-            rows: [
-              { label: 'Mean radius', value: '6,371 km' },
-              { label: 'Orbital period', value: '365.25 days' },
-              { label: 'Rotation period', value: '23h 56m' },
-            ],
-          },
-          meshRef.current,
-        )
+        select(EARTH_INFO, meshRef.current)
       }}
     >
       <mesh ref={meshRef}>
@@ -454,6 +512,13 @@ function Moon() {
   const select = useSelect()
   const clockRef = useSimulationClock()
   const map = useTexture('/textures/2k_moon.jpg')
+
+  useRegisterObject({
+    key: 'moon',
+    label: 'Moon',
+    category: 'Moons',
+    onSelect: () => select(MOON_INFO, groupRef.current),
+  })
 
   useFrame(() => {
     if (!groupRef.current) return
@@ -546,6 +611,13 @@ function Sun() {
   const spinRef = useRef<Mesh>(null)
   const select = useSelect()
   const surfaceMap = useTexture('/textures/2k_sun.jpg')
+
+  useRegisterObject({
+    key: 'sun',
+    label: 'Sun',
+    category: 'Sun',
+    onSelect: () => select(SUN_INFO, spinRef.current),
+  })
 
   useFrame((_, delta) => {
     if (spinRef.current) spinRef.current.rotation.y += delta * 0.03
@@ -673,21 +745,27 @@ function PlanetMoon({ config }: { config: MoonConfig }) {
     )
   })
 
+  const moonInfo: SelectedInfo = {
+    title: config.label,
+    subtitle: 'Moon — real distance/period, circular-orbit approximation',
+    rows: [
+      { label: 'Orbital period', value: `${config.periodDays.toFixed(2)} days` },
+      { label: 'Mean distance', value: `${config.realDistanceKm.toLocaleString()} km` },
+      { label: 'Mean radius', value: `${config.realRadiusKm.toLocaleString()} km` },
+    ],
+  }
+
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(
-      {
-        title: config.label,
-        subtitle: 'Moon — real distance/period, circular-orbit approximation',
-        rows: [
-          { label: 'Orbital period', value: `${config.periodDays.toFixed(2)} days` },
-          { label: 'Mean distance', value: `${config.realDistanceKm.toLocaleString()} km` },
-          { label: 'Mean radius', value: `${config.realRadiusKm.toLocaleString()} km` },
-        ],
-      },
-      groupRef.current,
-    )
+    select(moonInfo, groupRef.current)
   }
+
+  useRegisterObject({
+    key: config.key,
+    label: config.label,
+    category: 'Moons',
+    onSelect: () => select(moonInfo, groupRef.current),
+  })
 
   return (
     <group ref={groupRef} onClick={handleClick}>
@@ -747,35 +825,43 @@ function Planet({ config }: { config: PlanetConfig }) {
 
   const periodDays = 360 / elements.meanMotionDegPerDay
 
+  const buildInfo = (): SelectedInfo => {
+    const relative = subtract(
+      heliocentricPosition(elements, clockRef.current),
+      earthHeliocentricPosition(clockRef.current),
+    )
+    const distanceAu = Math.hypot(relative.x, relative.y, relative.z)
+    return {
+      title: config.label,
+      subtitle: 'Planet',
+      rows: [
+        { label: 'Orbital period', value: `${periodDays.toFixed(1)} days` },
+        { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(3)} AU` },
+        {
+          label: 'Rotation period',
+          value: `${Math.abs(config.rotationPeriodDays).toFixed(2)} days${config.rotationPeriodDays < 0 ? ' (retrograde)' : ''}`,
+        },
+        {
+          label: 'Distance from Earth',
+          value: `${distanceAu.toFixed(2)} AU / ${((distanceAu * AU_IN_KM) / 1_000_000).toFixed(0)}M km`,
+        },
+      ],
+    }
+  }
+
+  useRegisterObject({
+    key: config.key,
+    label: config.label,
+    category: 'Planets',
+    onSelect: () => select(buildInfo(), spinRef.current),
+  })
+
   return (
     <group
       ref={groupRef}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        const relative = subtract(
-          heliocentricPosition(elements, clockRef.current),
-          earthHeliocentricPosition(clockRef.current),
-        )
-        const distanceAu = Math.hypot(relative.x, relative.y, relative.z)
-        select(
-          {
-            title: config.label,
-            subtitle: 'Planet',
-            rows: [
-              { label: 'Orbital period', value: `${periodDays.toFixed(1)} days` },
-              { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(3)} AU` },
-              {
-                label: 'Rotation period',
-                value: `${Math.abs(config.rotationPeriodDays).toFixed(2)} days${config.rotationPeriodDays < 0 ? ' (retrograde)' : ''}`,
-              },
-              {
-                label: 'Distance from Earth',
-                value: `${distanceAu.toFixed(2)} AU / ${((distanceAu * AU_IN_KM) / 1_000_000).toFixed(0)}M km`,
-              },
-            ],
-          },
-          spinRef.current,
-        )
+        select(buildInfo(), spinRef.current)
       }}
     >
       <mesh ref={spinRef}>
@@ -916,6 +1002,13 @@ function Comet({ config }: { config: CometConfig }) {
     select(cometInfo(config), groupRef.current)
   }
 
+  useRegisterObject({
+    key: config.key,
+    label: config.label,
+    category: 'Comets',
+    onSelect: () => select(cometInfo(config), groupRef.current),
+  })
+
   return (
     <group ref={groupRef} onClick={handleClick}>
       <mesh>
@@ -998,6 +1091,13 @@ function Voyager({ config }: { config: VoyagerConfig }) {
     event.stopPropagation()
     select(voyagerInfo(config), groupRef.current)
   }
+
+  useRegisterObject({
+    key: config.key,
+    label: config.label,
+    category: 'Deep space',
+    onSelect: () => select(voyagerInfo(config), groupRef.current),
+  })
 
   return (
     <group ref={groupRef} onClick={handleClick}>
@@ -1118,19 +1218,7 @@ function ClickTarget({
 // than helpful.
 const LABEL_HIDE_DISTANCE_FACTOR = 3.5
 
-function ObjectLabel({
-  text,
-  radius,
-  occlude = false,
-}: {
-  text: string
-  radius: number
-  /** For objects that sit close in front of/behind a large opaque body
-   * (ISS/Hubble against Earth) — Html has no depth testing by default, so
-   * without this the label floats on top of Earth's disc regardless of
-   * which is actually nearer the camera, reading as "a label on Earth." */
-  occlude?: boolean
-}) {
+function ObjectLabel({ text, radius }: { text: string; radius: number }) {
   const groupRef = useRef<Group>(null)
   const worldPos = useMemo(() => new Vector3(), [])
   const [visible, setVisible] = useState(true)
@@ -1146,7 +1234,7 @@ function ObjectLabel({
   return (
     <group ref={groupRef} position={[0, radius * 1.4, 0]}>
       {visible ? (
-        <Html center distanceFactor={10} zIndexRange={[0, 0]} occlude={occlude ? 'blending' : false}>
+        <Html center distanceFactor={10} zIndexRange={[0, 0]}>
           <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/75 backdrop-blur-sm">
             {text}
           </div>
@@ -1178,6 +1266,13 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
     },
     [neo, select],
   )
+
+  useRegisterObject({
+    key: neo.id,
+    label: neo.name,
+    category: 'Asteroids',
+    onSelect: () => select(neoInfo(neo), groupRef.current),
+  })
 
   return (
     <>
@@ -1245,6 +1340,13 @@ function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number
     },
     [neo, select],
   )
+
+  useRegisterObject({
+    key: neo.id,
+    label: neo.name,
+    category: 'Asteroids',
+    onSelect: () => select(neoInfo(neo), groupRef.current),
+  })
 
   return (
     <>
@@ -1347,31 +1449,38 @@ function StationMarker({
     if (ref.current) ref.current.rotation.y += delta * 0.15
   })
 
+  const issInfo: SelectedInfo = {
+    title: 'ISS',
+    subtitle: 'International Space Station — live',
+    rows: [
+      { label: 'Altitude', value: `${fix.altitudeKm.toFixed(0)} km` },
+      { label: 'Velocity', value: `${fix.velocityKmH.toFixed(0)} km/h` },
+      { label: 'Latitude', value: fix.latitude.toFixed(2) },
+      { label: 'Longitude', value: fix.longitude.toFixed(2) },
+    ],
+  }
+
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
       event.stopPropagation()
-      select(
-        {
-          title: 'ISS',
-          subtitle: 'International Space Station — live',
-          rows: [
-            { label: 'Altitude', value: `${fix.altitudeKm.toFixed(0)} km` },
-            { label: 'Velocity', value: `${fix.velocityKmH.toFixed(0)} km/h` },
-            { label: 'Latitude', value: fix.latitude.toFixed(2) },
-            { label: 'Longitude', value: fix.longitude.toFixed(2) },
-          ],
-        },
-        ref.current,
-      )
+      select(issInfo, ref.current)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [fix, select],
   )
+
+  useRegisterObject({
+    key: 'iss',
+    label: 'ISS',
+    category: 'Deep space',
+    onSelect: () => select(issInfo, ref.current),
+  })
 
   return (
     <group ref={ref} position={position}>
       <StationModel />
       <ClickTarget onClick={handleClick} small />
-      <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} occlude />
+      <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} />
     </group>
   )
 }
@@ -1478,14 +1587,74 @@ function Hubble() {
     select(HUBBLE_INFO, groupRef.current)
   }
 
+  useRegisterObject({
+    key: 'hubble',
+    label: 'Hubble',
+    category: 'Deep space',
+    onSelect: () => select(HUBBLE_INFO, groupRef.current),
+  })
+
   if (!ready) return null
 
   return (
     <group ref={groupRef} onClick={handleClick}>
       <HubbleModel />
       <ClickTarget onClick={handleClick} small />
-      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} occlude />
+      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} />
     </group>
+  )
+}
+
+/** Reliable alternative to tapping a (sometimes tiny, sometimes fast-moving)
+ * 3D target directly — every registered object, grouped, tap to select and
+ * camera-focus exactly as if it had been tapped in the scene. */
+function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
+  const [open, setOpen] = useState(false)
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, RegistryEntry[]>()
+    for (const entry of entries) {
+      const list = map.get(entry.category) ?? []
+      list.push(entry)
+      map.set(entry.category, list)
+    }
+    return map
+  }, [entries])
+
+  return (
+    <div className="pointer-events-auto absolute left-3 top-16">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`rounded border border-white/25 px-2.5 py-1.5 font-mono text-[0.65rem] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+          open ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70'
+        }`}
+      >
+        {open ? 'Close' : `Browse (${entries.length})`}
+      </button>
+      {open ? (
+        <div className="mt-1 max-h-[60vh] w-52 overflow-y-auto rounded border border-white/25 bg-[#0a0a0d]/95 p-2 font-mono text-xs text-white/80 shadow-[0_4px_20px_rgba(0,0,0,0.7)] backdrop-blur-md">
+          {[...grouped.entries()].map(([category, items]) => (
+            <div key={category} className="mb-2 last:mb-0">
+              <p className="mb-1 text-[0.65rem] uppercase tracking-wide text-white/40">{category}</p>
+              {items.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => {
+                    item.onSelect()
+                    setOpen(false)
+                  }}
+                  className="block w-full rounded px-2 py-1 text-left hover:bg-white/10"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -1657,6 +1826,7 @@ export function EarthScene() {
   const [showSatellites, setShowSatellites] = useState(true)
   const [selected, setSelected] = useState<SelectedInfo | null>(null)
   const [focusTarget, setFocusTarget] = useState<Object3D | null>(null)
+  const [menuEntries, setMenuEntries] = useState<RegistryEntry[]>([])
   // A plain mutable box, not a React ref — the time-speed toggle mutates it
   // directly and useFrame callbacks read it every frame; it never drives
   // this component's own render output.
@@ -1688,6 +1858,7 @@ export function EarthScene() {
 
   return (
     <SelectionContext.Provider value={select}>
+      <RegistryProvider onEntriesChange={setMenuEntries}>
       <div className="relative h-full w-full">
         <Canvas
           camera={{ position: [3, 2, 9], fov: 45, near: 0.01, far: 200 }}
@@ -1724,6 +1895,7 @@ export function EarthScene() {
           <Stars radius={80} depth={40} count={3000} factor={3} fade />
           <OrbitControls ref={controlsRef} enablePan minDistance={0.7} maxDistance={60} />
         </Canvas>
+        <ObjectMenu entries={menuEntries} />
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
         <NextApproachTicker />
         <SatelliteToggle visible={showSatellites} onToggle={() => setShowSatellites((v) => !v)} />
@@ -1738,6 +1910,7 @@ export function EarthScene() {
           />
         ) : null}
       </div>
+      </RegistryProvider>
     </SelectionContext.Provider>
   )
 }
