@@ -65,11 +65,10 @@ const EARTH_RADIUS = 0.5 // scene units — was an oversized 1
 const MOON_SCENE_ORBIT_RADIUS = 1.8
 const MOON_ORBIT_SCALE = MOON_SCENE_ORBIT_RADIUS / MOON_SEMI_MAJOR_AXIS_EARTH_RADII
 
-// Distinct from the planet-ring grey (#5a5a52) and the Earth-ring blue
-// (#3987e5) — every moon orbit (Earth's own and other planets') shares this
-// one muted color, fainter than a planet ring, so the ring hierarchy reads
-// at a glance: planets brightest, moons faintest.
-const MOON_RING_COLOR = '#7d89a3'
+// Earth's own Moon ring — other planets' moon rings instead reuse each
+// moon's own marker color (see MoonOrbitCircle), so this one just needs to
+// read as "grey rock" and sit apart from the Earth-ring blue (#3987e5).
+const MOON_RING_COLOR = '#aab2bd'
 const AU_SCALE = 6 // scene units per AU inside the inner system — was 4, more breathing room
 
 // Beyond Mars' neighborhood, real AU distances get compressed (log scale) so
@@ -102,7 +101,7 @@ function toScenePosition(vec: { x: number; y: number; z: number }): [number, num
 // ---------------------------------------------------------------------------
 
 const REALTIME_DAYS_PER_SECOND = 1 / 86400
-const ACCELERATED_DAYS_PER_SECOND = 8
+const ACCELERATED_DAYS_PER_SECOND = 3 // default on load — was 8, too fast to read as motion rather than a blur
 const FAST_DAYS_PER_SECOND = 45
 
 const BASE_JULIAN_DATE = unixMsToJulianDate(Date.now())
@@ -569,6 +568,7 @@ type PlanetConfig = {
   rotationPeriodDays: number
   ring?: boolean
   moons?: MoonConfig[]
+  ringColor: string
 }
 
 // Real semi-major axis (km) and real sidereal period (days) per moon — the
@@ -650,14 +650,17 @@ function PlanetMoon({ config }: { config: MoonConfig }) {
 // and rough proportion are preserved: Venus is deliberately close to Earth's
 // own size (real ratio 0.95), and Mars is bigger than Mercury (real ratio
 // 0.53 vs 0.38) — both were previously inverted/flattened here.
+// Ring colors loosely echo each planet's real surface/cloud tone (Mars'
+// rust, Saturn's pale gold, Uranus/Neptune's ice-giant blues) so each ring
+// visually pairs with its own planet instead of all 7 sharing one grey.
 const PLANETS: PlanetConfig[] = [
-  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.16, rotationPeriodDays: 58.646 },
-  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.47, rotationPeriodDays: -243.025 },
-  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.24, rotationPeriodDays: 1.02596, moons: MARS_MOONS },
-  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 1.9, rotationPeriodDays: 0.41354, moons: JUPITER_MOONS },
-  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 1.6, rotationPeriodDays: 0.4375, ring: true, moons: SATURN_MOONS },
-  { key: 'uranus', label: 'Uranus', texture: '/textures/2k_uranus.jpg', radius: 0.78, rotationPeriodDays: -0.71833 },
-  { key: 'neptune', label: 'Neptune', texture: '/textures/2k_neptune.jpg', radius: 0.75, rotationPeriodDays: 0.6713 },
+  { key: 'mercury', label: 'Mercury', texture: '/textures/2k_mercury.jpg', radius: 0.16, rotationPeriodDays: 58.646, ringColor: '#9c9187' },
+  { key: 'venus', label: 'Venus', texture: '/textures/2k_venus_atmosphere.jpg', radius: 0.47, rotationPeriodDays: -243.025, ringColor: '#e0c16c' },
+  { key: 'mars', label: 'Mars', texture: '/textures/2k_mars.jpg', radius: 0.24, rotationPeriodDays: 1.02596, moons: MARS_MOONS, ringColor: '#b5541c' },
+  { key: 'jupiter', label: 'Jupiter', texture: '/textures/2k_jupiter.jpg', radius: 1.9, rotationPeriodDays: 0.41354, moons: JUPITER_MOONS, ringColor: '#d9a066' },
+  { key: 'saturn', label: 'Saturn', texture: '/textures/2k_saturn.jpg', radius: 1.6, rotationPeriodDays: 0.4375, ring: true, moons: SATURN_MOONS, ringColor: '#e3c98f' },
+  { key: 'uranus', label: 'Uranus', texture: '/textures/2k_uranus.jpg', radius: 0.78, rotationPeriodDays: -0.71833, ringColor: '#7fd4d1' },
+  { key: 'neptune', label: 'Neptune', texture: '/textures/2k_neptune.jpg', radius: 0.75, rotationPeriodDays: 0.6713, ringColor: '#3d5aa8' },
 ]
 
 /** A real neighboring planet, positioned at its own live heliocentric
@@ -729,7 +732,7 @@ function Planet({ config }: { config: PlanetConfig }) {
       ) : null}
       {config.moons?.map((moon) => (
         <group key={moon.key}>
-          <MoonOrbitCircle radius={moon.sceneOrbitRadius} />
+          <MoonOrbitCircle radius={moon.sceneOrbitRadius} color={moon.color} />
           <PlanetMoon config={moon} />
         </group>
       ))}
@@ -775,12 +778,13 @@ function MoonOrbitRing() {
 
 /** Flat circular ring for a non-Earth planet's moon — matches the circular
  * approximation <PlanetMoon> itself moves along, so the ring and the moon
- * always line up exactly. */
-function MoonOrbitCircle({ radius }: { radius: number }) {
+ * always line up exactly. Colored to match that moon's own marker, so ring
+ * and marker read as one object instead of moons sharing one grey ring. */
+function MoonOrbitCircle({ radius, color }: { radius: number; color: string }) {
   return (
     <mesh rotation={[Math.PI / 2, 0, 0]}>
       <ringGeometry args={[radius - 0.004, radius + 0.004, 64]} />
-      <meshBasicMaterial color={MOON_RING_COLOR} transparent opacity={0.13} side={BackSide} />
+      <meshBasicMaterial color={color} transparent opacity={0.13} side={BackSide} />
     </mesh>
   )
 }
@@ -790,7 +794,7 @@ function InnerSolarSystem() {
     <>
       <OrbitRing elements={PLANETARY_ELEMENTS.earth} color="#3987e5" opacity={0.22} />
       {PLANETS.map((config) => (
-        <OrbitRing key={`ring-${config.key}`} elements={PLANETARY_ELEMENTS[config.key]} color="#5a5a52" opacity={0.2} />
+        <OrbitRing key={`ring-${config.key}`} elements={PLANETARY_ELEMENTS[config.key]} color={config.ringColor} opacity={0.2} />
       ))}
       {PLANETS.map((config) => (
         <Planet key={config.key} config={config} />
@@ -807,8 +811,11 @@ type CometConfig = { key: CometKey; label: string; color: string }
 // never appears alongside those in a single legend.
 const COMETS: CometConfig[] = [
   { key: 'halley', label: "Halley's Comet", color: '#bfe3ff' },
-  { key: 'encke', label: 'Comet Encke', color: '#bfe3ff' },
-  { key: 'churyumovGerasimenko', label: '67P/Churyumov–Gerasimenko', color: '#bfe3ff' },
+  { key: 'encke', label: 'Comet Encke', color: '#9fd8f5' },
+  // 67P is genuinely one of the darkest bodies known (albedo ~0.06, darker
+  // than coal) — a dusty grey-brown reads truer than the icy-blue treatment
+  // shared by Halley/Encke, not just a differentiator.
+  { key: 'churyumovGerasimenko', label: '67P/Churyumov–Gerasimenko', color: '#8a8378' },
 ]
 
 function cometInfo(config: CometConfig): SelectedInfo {
@@ -1203,7 +1210,7 @@ type SpeedMode = 'realtime' | 'accelerated' | 'fast'
 
 const SPEED_MODES: Record<SpeedMode, { label: string; daysPerSecond: number }> = {
   realtime: { label: 'Real-time', daysPerSecond: REALTIME_DAYS_PER_SECOND },
-  accelerated: { label: '8 d/s', daysPerSecond: ACCELERATED_DAYS_PER_SECOND },
+  accelerated: { label: '3 d/s', daysPerSecond: ACCELERATED_DAYS_PER_SECOND },
   fast: { label: '45 d/s', daysPerSecond: FAST_DAYS_PER_SECOND },
 }
 
