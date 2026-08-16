@@ -187,7 +187,9 @@ function sunDirectionAt(julianDate: number): [number, number, number] {
 type InfoRow = { label: string; value: string }
 type SelectedInfo = { title: string; subtitle: string; rows: InfoRow[] }
 
-const SelectionContext = createContext<(info: SelectedInfo, target?: Object3D | null) => void>(() => {})
+const SelectionContext = createContext<(info: SelectedInfo, target?: Object3D | null, radius?: number) => void>(
+  () => {},
+)
 
 function useSelect() {
   return useContext(SelectionContext)
@@ -436,7 +438,7 @@ function Earth() {
     key: 'earth',
     label: 'Earth',
     category: 'Planets',
-    onSelect: () => select(EARTH_INFO, meshRef.current),
+    onSelect: () => select(EARTH_INFO, meshRef.current, EARTH_RADIUS),
   })
   // Real daily satellite mosaic (NASA GIBS) instead of a static generic map.
   const [dayMap, nightMap] = useTexture(['/api/earth-imagery', '/textures/2k_earth_nightmap.jpg'])
@@ -474,7 +476,7 @@ function Earth() {
       quaternion={EARTH_AXIAL_TILT_QUATERNION}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select(EARTH_INFO, meshRef.current)
+        select(EARTH_INFO, meshRef.current, EARTH_RADIUS)
       }}
     >
       <mesh ref={meshRef}>
@@ -517,7 +519,7 @@ function Moon() {
     key: 'moon',
     label: 'Moon',
     category: 'Moons',
-    onSelect: () => select(MOON_INFO, groupRef.current),
+    onSelect: () => select(MOON_INFO, groupRef.current, 0.035),
   })
 
   useFrame(() => {
@@ -537,7 +539,7 @@ function Moon() {
       ref={groupRef}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select(MOON_INFO, groupRef.current)
+        select(MOON_INFO, groupRef.current, 0.035)
       }}
     >
       <mesh>
@@ -547,7 +549,7 @@ function Moon() {
       <ClickTarget
         onClick={(event) => {
           event.stopPropagation()
-          select(MOON_INFO, groupRef.current)
+          select(MOON_INFO, groupRef.current, 0.035)
         }}
       />
       <ObjectLabel text="Moon" radius={0.035} />
@@ -616,7 +618,7 @@ function Sun() {
     key: 'sun',
     label: 'Sun',
     category: 'Sun',
-    onSelect: () => select(SUN_INFO, spinRef.current),
+    onSelect: () => select(SUN_INFO, spinRef.current, 0.55),
   })
 
   useFrame((_, delta) => {
@@ -626,7 +628,7 @@ function Sun() {
   // Default camera focus: the Sun selects itself once, on mount, reusing
   // the same click-to-focus system rather than a separate camera path.
   useEffect(() => {
-    select(SUN_INFO, spinRef.current)
+    select(SUN_INFO, spinRef.current, 0.55)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -634,7 +636,7 @@ function Sun() {
     <group
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select(SUN_INFO, spinRef.current)
+        select(SUN_INFO, spinRef.current, 0.55)
       }}
     >
       <mesh ref={spinRef}>
@@ -757,14 +759,14 @@ function PlanetMoon({ config }: { config: MoonConfig }) {
 
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(moonInfo, groupRef.current)
+    select(moonInfo, groupRef.current, config.renderRadius)
   }
 
   useRegisterObject({
     key: config.key,
     label: config.label,
     category: 'Moons',
-    onSelect: () => select(moonInfo, groupRef.current),
+    onSelect: () => select(moonInfo, groupRef.current, config.renderRadius),
   })
 
   return (
@@ -853,7 +855,7 @@ function Planet({ config }: { config: PlanetConfig }) {
     key: config.key,
     label: config.label,
     category: 'Planets',
-    onSelect: () => select(buildInfo(), spinRef.current),
+    onSelect: () => select(buildInfo(), spinRef.current, config.radius),
   })
 
   return (
@@ -861,7 +863,7 @@ function Planet({ config }: { config: PlanetConfig }) {
       ref={groupRef}
       onClick={(event: ThreeEvent<MouseEvent>) => {
         event.stopPropagation()
-        select(buildInfo(), spinRef.current)
+        select(buildInfo(), spinRef.current, config.radius)
       }}
     >
       <mesh ref={spinRef}>
@@ -999,14 +1001,14 @@ function Comet({ config }: { config: CometConfig }) {
 
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(cometInfo(config), groupRef.current)
+    select(cometInfo(config), groupRef.current, 0.06)
   }
 
   useRegisterObject({
     key: config.key,
     label: config.label,
     category: 'Comets',
-    onSelect: () => select(cometInfo(config), groupRef.current),
+    onSelect: () => select(cometInfo(config), groupRef.current, 0.06),
   })
 
   return (
@@ -1061,6 +1063,19 @@ const VOYAGERS: VoyagerConfig[] = [
   { key: 'voyager2', label: 'Voyager 2', color: '#b9c9db', heading: 'toward Pavo' },
 ]
 
+// Real NASA/JPL VTAD model — public domain, "twin Voyager spacecraft" is one
+// shared model since the two probes are physically identical builds, not a
+// simplification. Reused for both instances, tinted per-probe.
+const VOYAGER_MODEL_URL = '/models/voyager.glb'
+const VOYAGER_TARGET_SIZE = 0.09
+
+useGLTF.preload(VOYAGER_MODEL_URL)
+
+function VoyagerModel({ color }: { color: string }) {
+  const model = useNormalizedModel(VOYAGER_MODEL_URL, VOYAGER_TARGET_SIZE, color, 0.2)
+  return <primitive object={model} />
+}
+
 function voyagerInfo(config: VoyagerConfig): SelectedInfo {
   return {
     title: config.label,
@@ -1089,30 +1104,21 @@ function Voyager({ config }: { config: VoyagerConfig }) {
 
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(voyagerInfo(config), groupRef.current)
+    select(voyagerInfo(config), groupRef.current, VOYAGER_TARGET_SIZE)
   }
 
   useRegisterObject({
     key: config.key,
     label: config.label,
     category: 'Deep space',
-    onSelect: () => select(voyagerInfo(config), groupRef.current),
+    onSelect: () => select(voyagerInfo(config), groupRef.current, VOYAGER_TARGET_SIZE),
   })
 
   return (
     <group ref={groupRef} onClick={handleClick}>
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <cylinderGeometry args={[0.045, 0.045, 0.006, 16]} />
-        <meshStandardMaterial
-          color={config.color}
-          emissive={config.color}
-          emissiveIntensity={0.3}
-          metalness={0.6}
-          roughness={0.4}
-        />
-      </mesh>
-      <ClickTarget onClick={handleClick} />
-      <ObjectLabel text={config.label} radius={0.045} />
+      <VoyagerModel color={config.color} />
+      <ClickTarget onClick={handleClick} small />
+      <ObjectLabel text={config.label} radius={VOYAGER_TARGET_SIZE} />
     </group>
   )
 }
@@ -1218,6 +1224,15 @@ function ClickTarget({
 // than helpful.
 const LABEL_HIDE_DISTANCE_FACTOR = 3.5
 
+// OrbitControls' minDistance (how close the camera can zoom to the current
+// orbit target) — comfortably smaller than LABEL_HIDE_DISTANCE_FACTOR so
+// there's always a reachable zoom range where a label actually hides,
+// whatever object is focused. DEFAULT is the floor used before anything's
+// been selected yet (matches the original always-0.7 behavior).
+const DEFAULT_MIN_ZOOM_DISTANCE = 0.7
+const MIN_ZOOM_DISTANCE_FACTOR = 1.5
+const MIN_ZOOM_DISTANCE_FLOOR = 0.05
+
 function ObjectLabel({ text, radius }: { text: string; radius: number }) {
   const groupRef = useRef<Group>(null)
   const worldPos = useMemo(() => new Vector3(), [])
@@ -1262,16 +1277,16 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
       event.stopPropagation()
-      select(neoInfo(neo), groupRef.current)
+      select(neoInfo(neo), groupRef.current, radius)
     },
-    [neo, select],
+    [neo, select, radius],
   )
 
   useRegisterObject({
     key: neo.id,
     label: neo.name,
     category: 'Asteroids',
-    onSelect: () => select(neoInfo(neo), groupRef.current),
+    onSelect: () => select(neoInfo(neo), groupRef.current, radius),
   })
 
   return (
@@ -1336,16 +1351,16 @@ function FallbackNeoMarker({ neo, index }: { neo: NearEarthObject; index: number
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
       event.stopPropagation()
-      select(neoInfo(neo), groupRef.current)
+      select(neoInfo(neo), groupRef.current, radius)
     },
-    [neo, select],
+    [neo, select, radius],
   )
 
   useRegisterObject({
     key: neo.id,
     label: neo.name,
     category: 'Asteroids',
-    onSelect: () => select(neoInfo(neo), groupRef.current),
+    onSelect: () => select(neoInfo(neo), groupRef.current, radius),
   })
 
   return (
@@ -1463,7 +1478,7 @@ function StationMarker({
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
       event.stopPropagation()
-      select(issInfo, ref.current)
+      select(issInfo, ref.current, ISS_TARGET_SIZE)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [fix, select],
@@ -1473,7 +1488,7 @@ function StationMarker({
     key: 'iss',
     label: 'ISS',
     category: 'Deep space',
-    onSelect: () => select(issInfo, ref.current),
+    onSelect: () => select(issInfo, ref.current, ISS_TARGET_SIZE),
   })
 
   return (
@@ -1584,14 +1599,14 @@ function Hubble() {
 
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(HUBBLE_INFO, groupRef.current)
+    select(HUBBLE_INFO, groupRef.current, HUBBLE_TARGET_SIZE)
   }
 
   useRegisterObject({
     key: 'hubble',
     label: 'Hubble',
     category: 'Deep space',
-    onSelect: () => select(HUBBLE_INFO, groupRef.current),
+    onSelect: () => select(HUBBLE_INFO, groupRef.current, HUBBLE_TARGET_SIZE),
   })
 
   if (!ready) return null
@@ -1826,6 +1841,11 @@ export function EarthScene() {
   const [showSatellites, setShowSatellites] = useState(true)
   const [selected, setSelected] = useState<SelectedInfo | null>(null)
   const [focusTarget, setFocusTarget] = useState<Object3D | null>(null)
+  // Drives OrbitControls' minDistance below — a single fixed 0.7 floor
+  // worked fine for planets but made it physically impossible to zoom close
+  // enough to small objects (comets, ISS, Hubble) to ever clear their own
+  // label-hide threshold, since that floor was bigger than the threshold.
+  const [focusRadius, setFocusRadius] = useState(DEFAULT_MIN_ZOOM_DISTANCE)
   const [menuEntries, setMenuEntries] = useState<RegistryEntry[]>([])
   // A plain mutable box, not a React ref — the time-speed toggle mutates it
   // directly and useFrame callbacks read it every frame; it never drives
@@ -1848,9 +1868,12 @@ export function EarthScene() {
     }
   }, [])
 
-  const select = useCallback((info: SelectedInfo, target?: Object3D | null) => {
+  const select = useCallback((info: SelectedInfo, target?: Object3D | null, radius?: number) => {
     setSelected(info)
     setFocusTarget(target ?? null)
+    setFocusRadius(
+      radius ? Math.max(MIN_ZOOM_DISTANCE_FLOOR, radius * MIN_ZOOM_DISTANCE_FACTOR) : DEFAULT_MIN_ZOOM_DISTANCE,
+    )
   }, [])
 
   const trackedObjects = objects.filter((neo) => neo.orbit !== null)
@@ -1871,6 +1894,7 @@ export function EarthScene() {
           onPointerMissed={() => {
             setSelected(null)
             setFocusTarget(null)
+            setFocusRadius(DEFAULT_MIN_ZOOM_DISTANCE)
           }}
         >
           <SimulationClockProvider speedRef={speedBox}>
@@ -1893,7 +1917,7 @@ export function EarthScene() {
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
           <Stars radius={80} depth={40} count={3000} factor={3} fade />
-          <OrbitControls ref={controlsRef} enablePan minDistance={0.7} maxDistance={60} />
+          <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
         <ObjectMenu entries={menuEntries} />
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
@@ -1906,6 +1930,7 @@ export function EarthScene() {
             onClose={() => {
               setSelected(null)
               setFocusTarget(null)
+              setFocusRadius(DEFAULT_MIN_ZOOM_DISTANCE)
             }}
           />
         ) : null}
