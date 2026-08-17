@@ -1776,6 +1776,24 @@ function FallbackNeoField({ objects }: { objects: NearEarthObject[] }) {
 // Space station (ISS) — Earth-relative, not heliocentric
 // ---------------------------------------------------------------------------
 
+// Real ISS/Hubble orbital periods (~90-95 min) mean pure real wall-clock
+// motion is only a few pixels of arc over a normal few-second glance — easy
+// to mistake for "not moving at all," which is exactly what got reported.
+// Not tied to the planetary time control (its day-scale multipliers would
+// spin a 90-minute orbit into a meaningless blur) — a fixed, modest
+// acceleration instead. Still genuine SGP4 output; just evaluated against
+// an accelerated clock input instead of true real time, same honesty
+// tradeoff as every other "boosted for visibility" constant in this file.
+const NEAR_EARTH_TIME_MULTIPLIER = 60
+
+function useAcceleratedNow(): () => Date {
+  const offsetMsRef = useRef(0)
+  useFrame((_, delta) => {
+    offsetMsRef.current += delta * 1000 * (NEAR_EARTH_TIME_MULTIPLIER - 1)
+  })
+  return () => new Date(Date.now() + offsetMsRef.current)
+}
+
 // Real NASA/Ames geometry (nasa/NASA-3D-Resources, public domain — 6,628
 // polygons, 38KB as glTF), not a procedural stand-in.
 const ISS_MODEL_URL = '/models/iss.glb'
@@ -1850,6 +1868,7 @@ function IssStation({ onReady }: { onReady: () => void }) {
   const frameCountRef = useRef(0)
   const [ready, setReady] = useState(false)
   const [trail, setTrail] = useState<[number, number, number][]>([])
+  const getAcceleratedNow = useAcceleratedNow()
 
   useEffect(() => {
     let cancelled = false
@@ -1870,7 +1889,7 @@ function IssStation({ onReady }: { onReady: () => void }) {
 
   useFrame(() => {
     if (!groupRef.current || !satrecRef.current) return
-    const now = new Date()
+    const now = getAcceleratedNow()
     const result = propagate(satrecRef.current, now)
     if (!result || !result.position || !result.velocity) return
     const geo = eciToGeodetic(result.position, gstime(now))
@@ -1965,14 +1984,16 @@ const HUBBLE_INFO: SelectedInfo = {
 }
 
 /** Propagated with real orbital state (SGP4), refreshed every frame like the
- * Starlink field — but anchored to real wall-clock time, not the app's
- * adjustable simulation clock, for the same reason as the satellites: a TLE
- * is only valid near its real epoch. */
+ * Starlink field — but anchored to (accelerated) real wall-clock time, not
+ * the app's adjustable simulation clock: a TLE is only valid near its real
+ * epoch, so the day-scale planetary time control can't drive it — see
+ * useAcceleratedNow above for why it still needs *some* acceleration. */
 function Hubble() {
   const groupRef = useRef<Group>(null)
   const select = useSelect()
   const satrecRef = useRef<SatRec | null>(null)
   const [ready, setReady] = useState(false)
+  const getAcceleratedNow = useAcceleratedNow()
 
   useEffect(() => {
     let cancelled = false
@@ -1991,7 +2012,7 @@ function Hubble() {
 
   useFrame(() => {
     if (!groupRef.current || !satrecRef.current) return
-    const now = new Date()
+    const now = getAcceleratedNow()
     const result = propagate(satrecRef.current, now)
     if (!result || !result.position) return
     const geo = eciToGeodetic(result.position, gstime(now))
