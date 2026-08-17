@@ -51,7 +51,7 @@ import {
   type PlanetKey,
   type VoyagerKey,
 } from '@/lib/orbitalMechanics'
-import { latLonAltToPosition, type IssPosition } from '@/lib/spaceObjects'
+import { latLonAltToPosition } from '@/lib/spaceObjects'
 import { SatelliteConstellation } from './SatelliteConstellation'
 import { eciToGeodetic, gstime, propagate, twoline2satrec, type SatRec } from 'satellite.js'
 
@@ -86,6 +86,9 @@ const TYPE_SATELLITE = '#3987e5' // blue
 const TYPE_STATION = '#199e70' // aqua
 
 const AU_IN_KM = 149_597_870.7
+// Sun's standard gravitational parameter (GM), km^3/s^2 — the one extra
+// constant the vis-viva equation needs beyond data already in scope.
+const GM_SUN_KM3_S2 = 1.32712440018e11
 const EARTH_RADIUS = 0.5 // scene units — was an oversized 1
 
 // ISS/Hubble's real LEO altitude is only ~7-8% of Earth's own radius — at
@@ -188,7 +191,38 @@ function sunDirectionAt(julianDate: number): [number, number, number] {
 // ---------------------------------------------------------------------------
 
 type InfoRow = { label: string; value: string }
-type SelectedInfo = { title: string; subtitle: string; rows: InfoRow[] }
+// computeLive, when present, is polled periodically by EarthScene while this
+// object stays selected and replaces the whole SelectedInfo — a self-
+// contained "refresh" closure rather than a separate live-data channel, so
+// the info panel never needs its own knowledge of which fields are live.
+type SelectedInfo = { title: string; subtitle: string; rows: InfoRow[]; computeLive?: () => SelectedInfo }
+
+/** "Distance from Earth" (real, from the same vector math used to place the
+ * object in the scene) plus orbital velocity (vis-viva equation, using the
+ * object's current Sun distance and semi-major axis) — shared by every body
+ * with real heliocentric orbital elements (planets, comets, dwarf planets,
+ * named asteroids, tracked NEOs), so it's computed once here instead of
+ * five near-identical times. */
+function heliocentricTelemetryRows(elements: OrbitalElements, julianDate: number): InfoRow[] {
+  const objectPos = heliocentricPosition(elements, julianDate)
+  const earthPos = earthHeliocentricPosition(julianDate)
+  const relative = subtract(objectPos, earthPos)
+  const distanceFromEarthAu = Math.hypot(relative.x, relative.y, relative.z)
+  const rows: InfoRow[] = [
+    {
+      label: 'Distance from Earth',
+      value: `${distanceFromEarthAu.toFixed(2)} AU / ${((distanceFromEarthAu * AU_IN_KM) / 1_000_000).toFixed(0)}M km`,
+    },
+  ]
+
+  const rSunKm = Math.hypot(objectPos.x, objectPos.y, objectPos.z) * AU_IN_KM
+  const aKm = elements.semiMajorAxisAu * AU_IN_KM
+  const velocitySquared = GM_SUN_KM3_S2 * (2 / rSunKm - 1 / aKm)
+  if (velocitySquared > 0) {
+    rows.push({ label: 'Orbital velocity', value: `${Math.sqrt(velocitySquared).toFixed(1)} km/s` })
+  }
+  return rows
+}
 
 const SelectionContext = createContext<(info: SelectedInfo, target?: Object3D | null, radius?: number) => void>(
   () => {},
@@ -831,14 +865,10 @@ function Planet({ config }: { config: PlanetConfig }) {
   const periodDays = 360 / elements.meanMotionDegPerDay
 
   const buildInfo = (): SelectedInfo => {
-    const relative = subtract(
-      heliocentricPosition(elements, clockRef.current),
-      earthHeliocentricPosition(clockRef.current),
-    )
-    const distanceAu = Math.hypot(relative.x, relative.y, relative.z)
     return {
       title: config.label,
       subtitle: 'Planet',
+      computeLive: buildInfo,
       rows: [
         { label: 'Orbital period', value: `${periodDays.toFixed(1)} days` },
         { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(3)} AU` },
@@ -846,10 +876,7 @@ function Planet({ config }: { config: PlanetConfig }) {
           label: 'Rotation period',
           value: `${Math.abs(config.rotationPeriodDays).toFixed(2)} days${config.rotationPeriodDays < 0 ? ' (retrograde)' : ''}`,
         },
-        {
-          label: 'Distance from Earth',
-          value: `${distanceAu.toFixed(2)} AU / ${((distanceAu * AU_IN_KM) / 1_000_000).toFixed(0)}M km`,
-        },
+        ...heliocentricTelemetryRows(elements, clockRef.current),
       ],
     }
   }
@@ -968,7 +995,7 @@ const COMETS: CometConfig[] = [
   { key: 'churyumovGerasimenko', label: '67P/Churyumov–Gerasimenko', color: '#8a8378' },
 ]
 
-function cometInfo(config: CometConfig): SelectedInfo {
+function cometInfo(config: CometConfig, julianDate: number): SelectedInfo {
   const elements = COMET_ELEMENTS[config.key]
   const periodYears = 360 / elements.meanMotionDegPerDay / 365.25
   return {
@@ -979,6 +1006,7 @@ function cometInfo(config: CometConfig): SelectedInfo {
       { label: 'Eccentricity', value: elements.eccentricity.toFixed(3) },
       { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(2)} AU` },
       { label: 'Inclination', value: `${elements.inclinationDeg.toFixed(1)}°` },
+      ...heliocentricTelemetryRows(elements, julianDate),
     ],
   }
 }
@@ -1058,16 +1086,21 @@ function Comet({ config }: { config: CometConfig }) {
     }
   })
 
+  const buildInfo = (): SelectedInfo => ({
+    ...cometInfo(config, clockRef.current),
+    computeLive: buildInfo,
+  })
+
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(cometInfo(config), groupRef.current, 0.06)
+    select(buildInfo(), groupRef.current, 0.06)
   }
 
   useRegisterObject({
     key: config.key,
     label: config.label,
     category: 'Comets',
-    onSelect: () => select(cometInfo(config), groupRef.current, 0.06),
+    onSelect: () => select(buildInfo(), groupRef.current, 0.06),
   })
 
   return (
@@ -1769,83 +1802,116 @@ function StationModel() {
   return <primitive object={model} />
 }
 
-function StationMarker({
-  position,
-  fix,
-}: {
-  position: [number, number, number]
-  fix: IssPosition
-}) {
-  const ref = useRef<Group>(null)
+// Sampled once every ISS_TRAIL_SAMPLE_FRAMES frames (not every frame — the
+// station's own screen-space motion is subtle at this scale, so a 60fps
+// trail would just be dozens of near-identical points) and capped at
+// ISS_TRAIL_LENGTH, giving a few seconds of real recent ground-track path.
+const ISS_TRAIL_SAMPLE_FRAMES = 6
+const ISS_TRAIL_LENGTH = 40
+
+/** Real TLE (NORAD 25544) via Celestrak, propagated with SGP4 every frame —
+ * same pipeline as Hubble and the Starlink field. Replaced the old
+ * REST-polling version (a fix only every 15s, so the station visibly
+ * jumped instead of orbiting smoothly) with continuous real motion. No
+ * self-rotation: the real ISS is 3-axis stabilized and doesn't tumble —
+ * that was a leftover "looks alive between updates" animation from before
+ * this component had genuinely continuous motion, and it's gone now that
+ * the trail below does that job honestly instead. */
+function IssStation({ onReady }: { onReady: () => void }) {
+  const groupRef = useRef<Group>(null)
   const select = useSelect()
-  useFrame((_, delta) => {
-    if (ref.current) ref.current.rotation.y += delta * 0.15
+  const satrecRef = useRef<SatRec | null>(null)
+  const latestFixRef = useRef<{ latitude: number; longitude: number; altitudeKm: number; velocityKmH: number } | null>(
+    null,
+  )
+  const trailPointsRef = useRef<[number, number, number][]>([])
+  const frameCountRef = useRef(0)
+  const [ready, setReady] = useState(false)
+  const [trail, setTrail] = useState<[number, number, number][]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/iss-tle')
+      .then((res) => res.json())
+      .then((data: { tle: { line1: string; line2: string } | null }) => {
+        if (cancelled || !data.tle) return
+        satrecRef.current = twoline2satrec(data.tle.line1, data.tle.line2)
+        setReady(true)
+        onReady()
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useFrame(() => {
+    if (!groupRef.current || !satrecRef.current) return
+    const now = new Date()
+    const result = propagate(satrecRef.current, now)
+    if (!result || !result.position || !result.velocity) return
+    const geo = eciToGeodetic(result.position, gstime(now))
+    const latitude = (geo.latitude * 180) / Math.PI
+    const longitude = (geo.longitude * 180) / Math.PI
+    const altitudeKm = geo.height
+    const velocityKmH = Math.hypot(result.velocity.x, result.velocity.y, result.velocity.z) * 3600
+    latestFixRef.current = { latitude, longitude, altitudeKm, velocityKmH }
+
+    const [x, y, z] = latLonAltToPosition(latitude, longitude, altitudeKm * NEAR_EARTH_ALTITUDE_BOOST)
+    const position: [number, number, number] = [x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS]
+    groupRef.current.position.set(...position)
+
+    frameCountRef.current += 1
+    if (frameCountRef.current % ISS_TRAIL_SAMPLE_FRAMES === 0) {
+      trailPointsRef.current = [...trailPointsRef.current, position].slice(-ISS_TRAIL_LENGTH)
+      setTrail(trailPointsRef.current)
+    }
   })
 
-  const issInfo: SelectedInfo = {
-    title: 'ISS',
-    subtitle: 'International Space Station — live',
-    rows: [
-      { label: 'Altitude', value: `${fix.altitudeKm.toFixed(0)} km` },
-      { label: 'Velocity', value: `${fix.velocityKmH.toFixed(0)} km/h` },
-      { label: 'Latitude', value: fix.latitude.toFixed(2) },
-      { label: 'Longitude', value: fix.longitude.toFixed(2) },
-    ],
+  const buildInfo = (): SelectedInfo => {
+    const fix = latestFixRef.current
+    return {
+      title: 'ISS',
+      subtitle: 'International Space Station — live SGP4 propagation',
+      computeLive: buildInfo,
+      rows: fix
+        ? [
+            { label: 'Altitude', value: `${fix.altitudeKm.toFixed(0)} km` },
+            { label: 'Velocity', value: `${fix.velocityKmH.toFixed(0)} km/h` },
+            { label: 'Latitude', value: fix.latitude.toFixed(2) },
+            { label: 'Longitude', value: fix.longitude.toFixed(2) },
+          ]
+        : [],
+    }
   }
 
-  const handleClick = useCallback(
-    (event: ThreeEvent<MouseEvent>) => {
-      event.stopPropagation()
-      select(issInfo, ref.current, ISS_TARGET_SIZE)
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fix, select],
-  )
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(buildInfo(), groupRef.current, ISS_TARGET_SIZE)
+  }
 
   useRegisterObject({
     key: 'iss',
     label: 'ISS',
     category: 'Deep space',
-    onSelect: () => select(issInfo, ref.current, ISS_TARGET_SIZE),
+    onSelect: () => select(buildInfo(), groupRef.current, ISS_TARGET_SIZE),
   })
 
+  if (!ready) return null
+
   return (
-    <group ref={ref} position={position}>
-      <StationModel />
-      <ClickTarget onClick={handleClick} small />
-      <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} />
-    </group>
+    <>
+      <group ref={groupRef} onClick={handleClick}>
+        <StationModel />
+        <ClickTarget onClick={handleClick} small />
+        <ObjectLabel text="ISS" radius={ISS_TARGET_SIZE} />
+      </group>
+      {trail.length > 1 ? (
+        <Line points={trail} color={TYPE_STATION} transparent opacity={0.4} lineWidth={1.5} />
+      ) : null}
+    </>
   )
-}
-
-function IssTracker({ onFix }: { onFix: () => void }) {
-  const [fix, setFix] = useState<IssPosition | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const poll = () => {
-      fetch('/api/iss')
-        .then((res) => res.json())
-        .then((data: IssPosition & { error?: string }) => {
-          if (!cancelled && !data.error) {
-            setFix(data)
-            onFix()
-          }
-        })
-        .catch(() => {})
-    }
-    poll()
-    const interval = setInterval(poll, 15000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [onFix])
-
-  if (!fix) return null
-  const [x, y, z] = latLonAltToPosition(fix.latitude, fix.longitude, fix.altitudeKm * NEAR_EARTH_ALTITUDE_BOOST)
-  const position: [number, number, number] = [x * EARTH_RADIUS, y * EARTH_RADIUS, z * EARTH_RADIUS]
-  return <StationMarker position={position} fix={fix} />
 }
 
 // ---------------------------------------------------------------------------
@@ -2267,6 +2333,18 @@ export function EarthScene() {
   const controlsRef = useRef<OrbitControlsImpl>(null)
   const [webglSupported, setWebglSupported] = useState(true)
 
+  // Live telemetry: objects that carry a computeLive closure (currently the
+  // heliocentric bodies with real orbital elements) get their info panel
+  // refreshed on a slow interval rather than every frame — a "distance from
+  // Earth" readout doesn't need 60fps precision, and re-rendering the DOM
+  // info panel that often would be wasted work.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSelected((prev) => (prev?.computeLive ? prev.computeLive() : prev))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
   useEffect(() => {
     const canvas = document.createElement('canvas')
     const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl')
@@ -2370,7 +2448,7 @@ export function EarthScene() {
               <HelioNeoField objects={trackedObjects} />
             </HeliocentricFrame>
             <FallbackNeoField objects={fallbackObjects} />
-            <IssTracker onFix={() => setIssTracked(true)} />
+            <IssStation onReady={() => setIssTracked(true)} />
             <Hubble />
             <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
