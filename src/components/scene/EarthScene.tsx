@@ -2,6 +2,7 @@
 
 import {
   createContext,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -10,7 +11,7 @@ import {
   useState,
 } from 'react'
 import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber'
-import { Html, Line, OrbitControls, Stars, useGLTF, useTexture } from '@react-three/drei'
+import { Html, Line, OrbitControls, Stars, useGLTF, useProgress, useTexture } from '@react-three/drei'
 import {
   AdditiveBlending,
   BackSide,
@@ -1042,10 +1043,17 @@ function cometInfo(config: CometConfig, julianDate: number): SelectedInfo {
 // A comet's tail always points radially away from the Sun (solar wind/
 // radiation pressure push it outward, regardless of the comet's direction
 // of travel) — the Sun sits at the heliocentric origin, so "away from Sun"
-// is just the comet's own position vector, normalized. Rendered as a fixed
+// is just the comet's own position vector, normalized. Rendered as a
 // segment rotated to that direction each frame rather than an evolving
-// particle sim.
-const COMET_TAIL_LENGTH = 0.35
+// particle sim. The segment's own points stay a fixed unit length; the
+// parent group's non-uniform X scale stretches it to the real dynamic
+// length each frame instead — real comet tails grow near perihelion (solar
+// heating drives off more gas/dust) and shrink near aphelion, roughly
+// proportional to 1/distance, so this uses the same real heliocentric
+// distance already computed for position, no extra physics needed.
+const COMET_TAIL_UNIT_LENGTH = 1
+const COMET_TAIL_MIN_LENGTH = 0.15
+const COMET_TAIL_MAX_LENGTH = 0.6
 const COMET_TAIL_AXIS = new Vector3(1, 0, 0)
 
 // Deterministic string -> int hash, just to seed each comet's nucleus shape
@@ -1111,6 +1119,12 @@ function Comet({ config }: { config: CometConfig }) {
     if (tailRef.current) {
       awayFromSun.set(x, y, z).normalize()
       tailRef.current.quaternion.setFromUnitVectors(COMET_TAIL_AXIS, awayFromSun)
+      const heliocentricDistanceAu = Math.hypot(pos.x, pos.y, pos.z)
+      const tailLength = Math.min(
+        COMET_TAIL_MAX_LENGTH,
+        Math.max(COMET_TAIL_MIN_LENGTH, 0.35 / heliocentricDistanceAu),
+      )
+      tailRef.current.scale.setX(tailLength)
     }
   })
 
@@ -1150,7 +1164,7 @@ function Comet({ config }: { config: CometConfig }) {
         <Line
           points={[
             [0, 0, 0],
-            [COMET_TAIL_LENGTH, 0, 0],
+            [COMET_TAIL_UNIT_LENGTH, 0, 0],
           ]}
           color={config.color}
           transparent
@@ -2313,6 +2327,8 @@ function NextApproachTicker() {
           type="button"
           onClick={handleNotifyClick}
           title="Notify me on approach day"
+          aria-label={notifyEnabled ? 'Disable close-approach notification' : 'Enable close-approach notification'}
+          aria-pressed={notifyEnabled}
           className={`shrink-0 pl-1 ${notifyEnabled ? 'text-white' : 'text-white/40 hover:text-white/70'}`}
         >
           {notifyEnabled ? '🔔' : '🔕'}
@@ -2464,6 +2480,28 @@ function OnboardingTip() {
   )
 }
 
+/** useProgress reads a global zustand store wired to three's
+ * DefaultLoadingManager — it works from any component, not just ones
+ * inside the Canvas, so the loading UI can be plain HTML (a nicer, more
+ * flexible fallback than anything renderable inside a R3F <Suspense>)
+ * instead of needing its own 3D fallback scene. Hides itself once every
+ * queued texture/model load resolves. */
+function LoadingOverlay() {
+  const { active, progress } = useProgress()
+  if (!active) return null
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-black font-mono text-xs text-white/70">
+      <div className="h-1 w-40 overflow-hidden rounded-full bg-white/10">
+        <div
+          className="h-full bg-white/60 transition-[width]"
+          style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+        />
+      </div>
+      <p>Loading solar system…</p>
+    </div>
+  )
+}
+
 export function EarthScene() {
   const [objects, setObjects] = useState<NearEarthObject[]>([])
   const [issTracked, setIssTracked] = useState(false)
@@ -2537,6 +2575,23 @@ export function EarthScene() {
     [clockBox],
   )
 
+  const deselect = useCallback(() => {
+    setSelected(null)
+    setFocusTarget(null)
+    setFocusRadius(DEFAULT_MIN_ZOOM_DISTANCE)
+  }, [])
+
+  // Escape closes the info panel — the only other way is tapping empty
+  // space in the 3D view (onPointerMissed below), which isn't discoverable
+  // or available at all without a pointer.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') deselect()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [deselect])
+
   // Restores a shared deep link on load: the object selection waits for the
   // registry to populate (useRegisterObject calls land in effects after
   // mount) and fires once via pendingShareObjRef, set by <ShareLinkRestore>.
@@ -2576,40 +2631,39 @@ export function EarthScene() {
           // 3x-DPR phone was ~78% more fill-rate than 1.5x for a sharpness
           // difference nobody's going to see on a phone screen.
           dpr={[1, 1.5]}
-          onPointerMissed={() => {
-            setSelected(null)
-            setFocusTarget(null)
-            setFocusRadius(DEFAULT_MIN_ZOOM_DISTANCE)
-          }}
+          onPointerMissed={deselect}
         >
-          <SimulationClockProvider speedRef={speedBox} clockRef={clockBox}>
-            <Earth />
-            <PolarisMarker />
-            <MoonOrbitRing />
-            <Moon />
-            <HeliocentricFrame>
-              {/* SunLight is the only light in the scene — no ambient fill —
-                  co-located with <Sun/> so every object gets its own real
-                  per-position angle to the actual Sun. */}
-              <SunLight />
-              <Sun />
-              <InnerSolarSystem />
-              <CometField />
-              <VoyagerField />
-              <DwarfPlanetField />
-              <NamedAsteroidField />
-              <Jwst />
-              <HelioNeoField objects={trackedObjects} />
-            </HeliocentricFrame>
-            <FallbackNeoField objects={fallbackObjects} />
-            <IssStation onReady={() => setIssTracked(true)} />
-            <Hubble />
-            <SatelliteConstellation visible={showSatellites} />
-            <CameraFocus target={focusTarget} controlsRef={controlsRef} />
-          </SimulationClockProvider>
+          <Suspense fallback={null}>
+            <SimulationClockProvider speedRef={speedBox} clockRef={clockBox}>
+              <Earth />
+              <PolarisMarker />
+              <MoonOrbitRing />
+              <Moon />
+              <HeliocentricFrame>
+                {/* SunLight is the only light in the scene — no ambient fill —
+                    co-located with <Sun/> so every object gets its own real
+                    per-position angle to the actual Sun. */}
+                <SunLight />
+                <Sun />
+                <InnerSolarSystem />
+                <CometField />
+                <VoyagerField />
+                <DwarfPlanetField />
+                <NamedAsteroidField />
+                <Jwst />
+                <HelioNeoField objects={trackedObjects} />
+              </HeliocentricFrame>
+              <FallbackNeoField objects={fallbackObjects} />
+              <IssStation onReady={() => setIssTracked(true)} />
+              <Hubble />
+              <SatelliteConstellation visible={showSatellites} />
+              <CameraFocus target={focusTarget} controlsRef={controlsRef} />
+            </SimulationClockProvider>
+          </Suspense>
           <CameraCenteredStars />
           <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
+        <LoadingOverlay />
         <ObjectMenu entries={menuEntries} />
         <OnboardingTip />
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
@@ -2618,16 +2672,7 @@ export function EarthScene() {
         <ShareLinkRestore clockRef={clockBox} pendingObjRef={pendingShareObjRef} />
         <TimeTravelControl clockRef={clockBox} />
         <TimeControl speedRef={speedBox} />
-        {selected ? (
-          <InfoPanel
-            info={selected}
-            onClose={() => {
-              setSelected(null)
-              setFocusTarget(null)
-              setFocusRadius(DEFAULT_MIN_ZOOM_DISTANCE)
-            }}
-          />
-        ) : null}
+        {selected ? <InfoPanel info={selected} onClose={deselect} /> : null}
       </div>
       </RegistryProvider>
     </SelectionContext.Provider>
