@@ -156,16 +156,13 @@ function useSimulationClock(): ClockRef {
 
 function SimulationClockProvider({
   speedRef,
+  clockRef,
   children,
 }: {
   speedRef: SpeedRef
+  clockRef: ClockRef
   children: React.ReactNode
 }) {
-  // A real ref: mutated every frame in useFrame (never read during render —
-  // consumers read .current themselves, later, inside their own useFrame).
-  // The ref *object* is passed through context, not its .current value.
-  const clockRef = useRef<number>(BASE_JULIAN_DATE)
-
   useFrame((_, delta) => {
     clockRef.current += delta * speedRef.current
   }, -1)
@@ -269,7 +266,7 @@ function RegistryProvider({
 
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-3 top-25 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute right-4 top-[98px] w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
       <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
@@ -985,23 +982,38 @@ function cometInfo(config: CometConfig): SelectedInfo {
   }
 }
 
+// A comet's tail always points radially away from the Sun (solar wind/
+// radiation pressure push it outward, regardless of the comet's direction
+// of travel) — the Sun sits at the heliocentric origin, so "away from Sun"
+// is just the comet's own position vector, normalized. Rendered as a fixed
+// segment rotated to that direction each frame rather than an evolving
+// particle sim.
+const COMET_TAIL_LENGTH = 0.35
+const COMET_TAIL_AXIS = new Vector3(1, 0, 0)
+
 /** Real periodic comets from JPL's Small-Body Database, propagated with the
  * same Keplerian solver as the planets — their orbits are just far more
  * eccentric/inclined (Halley's e=0.97 is why solveEccentricAnomaly got a
  * better initial guess and more iterations above). Rendered as a small
- * nucleus plus an additive glow shell standing in for the coma; no physically
- * simulated tail. */
+ * nucleus, an additive glow shell standing in for the coma, and a tail
+ * pointing away from the Sun. */
 function Comet({ config }: { config: CometConfig }) {
   const groupRef = useRef<Group>(null)
+  const tailRef = useRef<Group>(null)
   const select = useSelect()
   const clockRef = useSimulationClock()
   const elements = COMET_ELEMENTS[config.key]
+  const awayFromSun = useMemo(() => new Vector3(), [])
 
   useFrame(() => {
     if (!groupRef.current) return
     const pos = heliocentricPosition(elements, clockRef.current)
     const [x, y, z] = toScenePosition(pos)
     groupRef.current.position.set(x, y, z)
+    if (tailRef.current) {
+      awayFromSun.set(x, y, z).normalize()
+      tailRef.current.quaternion.setFromUnitVectors(COMET_TAIL_AXIS, awayFromSun)
+    }
   })
 
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
@@ -1032,6 +1044,18 @@ function Comet({ config }: { config: CometConfig }) {
           depthWrite={false}
         />
       </mesh>
+      <group ref={tailRef}>
+        <Line
+          points={[
+            [0, 0, 0],
+            [COMET_TAIL_LENGTH, 0, 0],
+          ]}
+          color={config.color}
+          transparent
+          opacity={0.3}
+          lineWidth={1.5}
+        />
+      </group>
       <ClickTarget onClick={handleClick} />
       <ObjectLabel text={config.label} radius={0.06} />
     </group>
@@ -1369,7 +1393,7 @@ function Jwst() {
     <group ref={groupRef} onClick={handleClick}>
       <JwstModel />
       <ClickTarget onClick={handleClick} small />
-      <ObjectLabel text="JWST" radius={JWST_TARGET_SIZE} />
+      <ObjectLabel text="JWST" radius={JWST_TARGET_SIZE} stackIndex={2} />
     </group>
   )
 }
@@ -1474,7 +1498,12 @@ const DEFAULT_MIN_ZOOM_DISTANCE = 0.7
 const MIN_ZOOM_DISTANCE_FACTOR = 1.5
 const MIN_ZOOM_DISTANCE_FLOOR = 0.05
 
-function ObjectLabel({ text, radius }: { text: string; radius: number }) {
+// Near-Earth objects (ISS, Hubble, JWST) sit close enough together in scene
+// space that their labels overlap at typical zoom — not worth a general
+// screen-space collision solver for three objects, so each near-Earth label
+// takes an optional extra stack rung instead (ponytail: fixed-cluster fix,
+// upgrade to real collision avoidance if a 4th near-Earth object joins).
+function ObjectLabel({ text, radius, stackIndex = 0 }: { text: string; radius: number; stackIndex?: number }) {
   const groupRef = useRef<Group>(null)
   const worldPos = useMemo(() => new Vector3(), [])
   const [visible, setVisible] = useState(true)
@@ -1488,7 +1517,7 @@ function ObjectLabel({ text, radius }: { text: string; radius: number }) {
   })
 
   return (
-    <group ref={groupRef} position={[0, radius * 1.4, 0]}>
+    <group ref={groupRef} position={[0, radius * 1.4 + stackIndex * 0.12, 0]}>
       {visible ? (
         <Html center distanceFactor={10} zIndexRange={[0, 0]}>
           <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/75 backdrop-blur-sm">
@@ -1856,7 +1885,7 @@ function Hubble() {
     <group ref={groupRef} onClick={handleClick}>
       <HubbleModel />
       <ClickTarget onClick={handleClick} small />
-      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} />
+      <ObjectLabel text="Hubble" radius={HUBBLE_TARGET_SIZE} stackIndex={1} />
     </group>
   )
 }
@@ -1884,7 +1913,7 @@ function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
   }, [filtered])
 
   return (
-    <div className="pointer-events-auto absolute left-3 top-15">
+    <div className="pointer-events-auto absolute left-4 top-[58px]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -1958,7 +1987,7 @@ function TypeLegend({
   ]
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-3 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[14px] left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -1998,7 +2027,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
     <button
       type="button"
       onClick={onToggle}
-      className={`pointer-events-auto absolute right-3 top-15 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+      className={`pointer-events-auto absolute right-4 top-[58px] rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
         visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
       }`}
     >
@@ -2054,7 +2083,7 @@ function NextApproachTicker() {
     <button
       type="button"
       onClick={() => setExpanded((v) => !v)}
-      className="pointer-events-auto absolute bottom-14 left-3 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
+      className="pointer-events-auto absolute bottom-[54px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
     >
       <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
       {expanded ? (
@@ -2068,11 +2097,64 @@ function NextApproachTicker() {
   )
 }
 
+/** Jumps the simulation clock straight to a picked date instead of only
+ * scrubbing forward at a speed multiplier — clockRef is the same plain
+ * mutable box SimulationClockProvider reads every frame, so setting
+ * .current here is all a "time travel" jump needs, no extra state/context. */
+/** Applies a shared deep link's `?t=` julian date to the clock on mount —
+ * split out from EarthScene itself because clockRef there is a plain
+ * parameter (not the useMemo binding directly), which is what a mutation
+ * like this needs. */
+function ShareLinkRestore({
+  clockRef,
+  pendingObjRef,
+}: {
+  clockRef: ClockRef
+  pendingObjRef: React.RefObject<string | null>
+}) {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const t = params.get('t')
+    if (t) {
+      const julianDate = Number(t)
+      if (Number.isFinite(julianDate)) clockRef.current = julianDate
+    }
+    pendingObjRef.current = params.get('obj')
+  }, [clockRef, pendingObjRef])
+  return null
+}
+
+function TimeTravelControl({ clockRef }: { clockRef: ClockRef }) {
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!event.target.value) return
+    clockRef.current = unixMsToJulianDate(new Date(`${event.target.value}T00:00:00Z`).getTime())
+  }
+
+  return (
+    <div className="pointer-events-auto absolute bottom-[54px] right-4 flex items-center gap-2 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+      <input
+        type="date"
+        onChange={handleChange}
+        className="w-[7.5rem] bg-transparent normal-case tracking-normal text-white/90 [color-scheme:dark] focus:outline-none"
+      />
+      <button
+        type="button"
+        onClick={() => {
+          clockRef.current = unixMsToJulianDate(Date.now())
+        }}
+        className="shrink-0 hover:text-white"
+      >
+        Now
+      </button>
+    </div>
+  )
+}
+
 function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('realtime')
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 right-3 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[14px] right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       {(Object.keys(SPEED_MODES) as SpeedMode[]).map((key) => (
         <button
           key={key}
@@ -2106,6 +2188,7 @@ export function EarthScene() {
   // directly and useFrame callbacks read it every frame; it never drives
   // this component's own render output.
   const speedBox = useMemo<SpeedRef>(() => ({ current: REALTIME_DAYS_PER_SECOND }), [])
+  const clockBox = useMemo<ClockRef>(() => ({ current: BASE_JULIAN_DATE }), [])
   const controlsRef = useRef<OrbitControlsImpl>(null)
   const [webglSupported, setWebglSupported] = useState(true)
 
@@ -2130,13 +2213,37 @@ export function EarthScene() {
     }
   }, [])
 
-  const select = useCallback((info: SelectedInfo, target?: Object3D | null, radius?: number) => {
-    setSelected(info)
-    setFocusTarget(target ?? null)
-    setFocusRadius(
-      radius ? Math.max(MIN_ZOOM_DISTANCE_FLOOR, radius * MIN_ZOOM_DISTANCE_FACTOR) : DEFAULT_MIN_ZOOM_DISTANCE,
-    )
-  }, [])
+  const select = useCallback(
+    (info: SelectedInfo, target?: Object3D | null, radius?: number) => {
+      setSelected(info)
+      setFocusTarget(target ?? null)
+      setFocusRadius(
+        radius ? Math.max(MIN_ZOOM_DISTANCE_FLOOR, radius * MIN_ZOOM_DISTANCE_FACTOR) : DEFAULT_MIN_ZOOM_DISTANCE,
+      )
+      navigator.vibrate?.(10)
+      // Shareable deep link — the object's own title doubles as its lookup
+      // key (every SelectedInfo already carries one, so this needs no extra
+      // id threaded through the ~15 call sites that call select()), plus the
+      // raw simulation Julian date so a shared link reproduces the same view.
+      const params = new URLSearchParams(window.location.search)
+      params.set('obj', info.title)
+      params.set('t', clockBox.current.toFixed(4))
+      window.history.replaceState(null, '', `?${params.toString()}`)
+    },
+    [clockBox],
+  )
+
+  // Restores a shared deep link on load: the object selection waits for the
+  // registry to populate (useRegisterObject calls land in effects after
+  // mount) and fires once via pendingShareObjRef, set by <ShareLinkRestore>.
+  const pendingShareObjRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!pendingShareObjRef.current) return
+    const entry = menuEntries.find((e) => e.label === pendingShareObjRef.current)
+    if (!entry) return
+    pendingShareObjRef.current = null
+    entry.onSelect()
+  }, [menuEntries])
 
   const trackedObjects = objects.filter((neo) => neo.orbit !== null)
   const fallbackObjects = objects.filter((neo) => neo.orbit === null)
@@ -2171,7 +2278,7 @@ export function EarthScene() {
             setFocusRadius(DEFAULT_MIN_ZOOM_DISTANCE)
           }}
         >
-          <SimulationClockProvider speedRef={speedBox}>
+          <SimulationClockProvider speedRef={speedBox} clockRef={clockBox}>
             {/* SunLight is the only light in the scene — no ambient fill. */}
             <SunLight />
             <Earth />
@@ -2193,13 +2300,15 @@ export function EarthScene() {
             <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
-          <Stars radius={80} depth={40} count={3000} factor={3} fade />
+          <Stars radius={80} depth={40} count={3000} factor={3} />
           <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
         <ObjectMenu entries={menuEntries} />
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
         <NextApproachTicker />
         <SatelliteToggle visible={showSatellites} onToggle={() => setShowSatellites((v) => !v)} />
+        <ShareLinkRestore clockRef={clockBox} pendingObjRef={pendingShareObjRef} />
+        <TimeTravelControl clockRef={clockBox} />
         <TimeControl speedRef={speedBox} />
         {selected ? (
           <InfoPanel
