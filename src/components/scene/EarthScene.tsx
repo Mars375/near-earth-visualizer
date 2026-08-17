@@ -24,8 +24,6 @@ import {
   type Group,
   type Mesh,
   type Object3D,
-  type Points,
-  type PointsMaterial,
   type ShaderMaterial,
 } from 'three'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
@@ -271,7 +269,7 @@ function RegistryProvider({
 
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-4 top-28 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute right-3 top-25 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
       <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
@@ -1886,7 +1884,7 @@ function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
   }, [filtered])
 
   return (
-    <div className="pointer-events-auto absolute left-3 top-16">
+    <div className="pointer-events-auto absolute left-3 top-15">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -1960,11 +1958,11 @@ function TypeLegend({
   ]
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-4 left-3 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="flex min-h-8 w-full items-center gap-3 px-3 py-1.5 text-left"
+        className="flex w-full items-center gap-3 px-3 py-2 text-left"
       >
         <span className="text-white/60">
           {neoCount} objects{expanded ? '' : ' · legend'}
@@ -2000,7 +1998,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
     <button
       type="button"
       onClick={onToggle}
-      className={`pointer-events-auto absolute right-3 top-16 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+      className={`pointer-events-auto absolute right-3 top-15 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
         visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
       }`}
     >
@@ -2056,7 +2054,7 @@ function NextApproachTicker() {
     <button
       type="button"
       onClick={() => setExpanded((v) => !v)}
-      className="pointer-events-auto absolute bottom-14 left-3 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-2.5 py-1.5 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
+      className="pointer-events-auto absolute bottom-14 left-3 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
     >
       <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
       {expanded ? (
@@ -2074,7 +2072,7 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('realtime')
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 p-1 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-4 right-3 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       {(Object.keys(SPEED_MODES) as SpeedMode[]).map((key) => (
         <button
           key={key}
@@ -2083,37 +2081,13 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
             setMode(key)
             speedRef.current = SPEED_MODES[key].daysPerSecond
           }}
-          className={`min-h-8 px-2 ${mode === key ? 'bg-white/20 text-white' : 'hover:bg-white/10'}`}
+          className={`px-3 py-2 ${mode === key ? 'bg-white/20 text-white' : 'hover:bg-white/10'}`}
         >
           {SPEED_MODES[key].label}
         </button>
       ))}
     </div>
   )
-}
-
-// Fades the starfield out as the camera pulls back — at full zoom-out
-// (near OrbitControls' maxDistance) the fixed-radius procedural star sphere
-// stops reading as "distant background" and starts looking like clutter
-// pasted just outside the visible solar system, so it's faded to nothing
-// well before maxDistance instead of staying constant at every zoom level.
-const STAR_FADE_START_DISTANCE = 25
-const STAR_FADE_END_DISTANCE = 55
-
-function FadingStars({ controlsRef }: { controlsRef: React.RefObject<OrbitControlsImpl | null> }) {
-  const pointsRef = useRef<Points>(null)
-
-  useFrame(() => {
-    if (!pointsRef.current || !controlsRef.current) return
-    const distance = controlsRef.current.getDistance()
-    const t = (distance - STAR_FADE_START_DISTANCE) / (STAR_FADE_END_DISTANCE - STAR_FADE_START_DISTANCE)
-    const opacity = 1 - Math.min(1, Math.max(0, t))
-    const material = pointsRef.current.material as PointsMaterial
-    material.transparent = true
-    material.opacity = opacity
-  })
-
-  return <Stars ref={pointsRef} radius={80} depth={40} count={3000} factor={3} fade />
 }
 
 export function EarthScene() {
@@ -2219,7 +2193,7 @@ export function EarthScene() {
             <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
-          <FadingStars controlsRef={controlsRef} />
+          <Stars radius={80} depth={40} count={3000} factor={3} fade />
           <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
         <ObjectMenu entries={menuEntries} />
