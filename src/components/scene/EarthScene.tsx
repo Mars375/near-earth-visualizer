@@ -21,7 +21,6 @@ import {
   Quaternion,
   SphereGeometry,
   Vector3,
-  type DirectionalLight,
   type Group,
   type Mesh,
   type Object3D,
@@ -598,21 +597,22 @@ function Moon() {
 // Sun + light — the only light source in the scene
 // ---------------------------------------------------------------------------
 
-/** Tracks the same live direction as the Earth shader's terminator, so the
- * two can never drift apart. This is the ONLY light in the scene — no
- * ambient fill — so unlit sides of planets go genuinely dark, the way
- * sunlight actually works. */
+/** The only light in the scene — no ambient fill, so unlit sides of
+ * planets go genuinely dark, the way sunlight actually works. A
+ * directionalLight (uniform ray direction everywhere) previously stood in
+ * for this, angled to match Earth's own day/night terminator — accurate
+ * for Earth, but every other body was lit from that SAME fixed direction
+ * regardless of its own real position relative to the Sun, which isn't how
+ * light from a single point source actually works once you're looking at
+ * more than one planet. A pointLight sitting exactly where the Sun mesh
+ * sits (local origin, decay={0} so the "subway map" distance compression
+ * doesn't fake-darken the outer planets) radiates real per-object angles
+ * to everything in the scene — this is why it's mounted inside
+ * <HeliocentricFrame> right alongside <Sun/>, not as a scene-root sibling:
+ * it needs to inherit that frame's same per-frame Earth-relative
+ * translation, not track its own separate copy of the same math. */
 function SunLight() {
-  const lightRef = useRef<DirectionalLight>(null)
-  const clockRef = useSimulationClock()
-
-  useFrame(() => {
-    if (!lightRef.current) return
-    const [x, y, z] = sunDirectionAt(clockRef.current)
-    lightRef.current.position.set(x * 5, y * 5, z * 5)
-  })
-
-  return <directionalLight ref={lightRef} intensity={2.4} />
+  return <pointLight intensity={4} decay={0} />
 }
 
 const SUN_GLOW_VERTEX_SHADER = `
@@ -1167,7 +1167,7 @@ const DWARF_PLANETS: DwarfPlanetConfig[] = [
   { key: 'eris', label: 'Eris', color: '#e8e6e0' },
 ]
 
-function dwarfPlanetInfo(config: DwarfPlanetConfig): SelectedInfo {
+function dwarfPlanetInfo(config: DwarfPlanetConfig, julianDate: number): SelectedInfo {
   const elements = DWARF_PLANET_ELEMENTS[config.key]
   const periodYears = 360 / elements.meanMotionDegPerDay / 365.25
   return {
@@ -1178,6 +1178,7 @@ function dwarfPlanetInfo(config: DwarfPlanetConfig): SelectedInfo {
       { label: 'Eccentricity', value: elements.eccentricity.toFixed(3) },
       { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(2)} AU` },
       { label: 'Inclination', value: `${elements.inclinationDeg.toFixed(1)}°` },
+      ...heliocentricTelemetryRows(elements, julianDate),
     ],
   }
 }
@@ -1195,16 +1196,21 @@ function DwarfPlanet({ config }: { config: DwarfPlanetConfig }) {
     groupRef.current.position.set(x, y, z)
   })
 
+  const buildInfo = (): SelectedInfo => ({
+    ...dwarfPlanetInfo(config, clockRef.current),
+    computeLive: buildInfo,
+  })
+
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(dwarfPlanetInfo(config), groupRef.current, 0.06)
+    select(buildInfo(), groupRef.current, 0.06)
   }
 
   useRegisterObject({
     key: config.key,
     label: config.label,
     category: 'Dwarf planets',
-    onSelect: () => select(dwarfPlanetInfo(config), groupRef.current, 0.06),
+    onSelect: () => select(buildInfo(), groupRef.current, 0.06),
   })
 
   return (
@@ -1255,7 +1261,7 @@ function NamedAsteroidModel({ url, targetSize }: { url: string; targetSize: numb
   return <primitive object={model} />
 }
 
-function namedAsteroidInfo(config: NamedAsteroidConfig): SelectedInfo {
+function namedAsteroidInfo(config: NamedAsteroidConfig, julianDate: number): SelectedInfo {
   const elements = NAMED_ASTEROID_ELEMENTS[config.key]
   const periodYears = 360 / elements.meanMotionDegPerDay / 365.25
   return {
@@ -1266,6 +1272,7 @@ function namedAsteroidInfo(config: NamedAsteroidConfig): SelectedInfo {
       { label: 'Eccentricity', value: elements.eccentricity.toFixed(3) },
       { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(2)} AU` },
       { label: 'Inclination', value: `${elements.inclinationDeg.toFixed(1)}°` },
+      ...heliocentricTelemetryRows(elements, julianDate),
     ],
   }
 }
@@ -1283,16 +1290,21 @@ function NamedAsteroid({ config }: { config: NamedAsteroidConfig }) {
     groupRef.current.position.set(x, y, z)
   })
 
+  const buildInfo = (): SelectedInfo => ({
+    ...namedAsteroidInfo(config, clockRef.current),
+    computeLive: buildInfo,
+  })
+
   const handleClick = (event: ThreeEvent<MouseEvent>) => {
     event.stopPropagation()
-    select(namedAsteroidInfo(config), groupRef.current, config.targetSize)
+    select(buildInfo(), groupRef.current, config.targetSize)
   }
 
   useRegisterObject({
     key: config.key,
     label: config.label,
     category: 'Asteroids',
-    onSelect: () => select(namedAsteroidInfo(config), groupRef.current, config.targetSize),
+    onSelect: () => select(buildInfo(), groupRef.current, config.targetSize),
   })
 
   return (
@@ -1625,11 +1637,21 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
     groupRef.current.position.set(x, y, z)
   })
 
+  const buildInfo = (): SelectedInfo => {
+    const info = neoInfo(neo)
+    return {
+      ...info,
+      rows: [...info.rows, ...heliocentricTelemetryRows(orbit, clockRef.current)],
+      computeLive: buildInfo,
+    }
+  }
+
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>) => {
       event.stopPropagation()
-      select(neoInfo(neo), groupRef.current, radius)
+      select(buildInfo(), groupRef.current, radius)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [neo, select, radius],
   )
 
@@ -1637,7 +1659,7 @@ function HelioNeoMarker({ neo }: { neo: NearEarthObject }) {
     key: neo.id,
     label: neo.name,
     category: 'Asteroids',
-    onSelect: () => select(neoInfo(neo), groupRef.current, radius),
+    onSelect: () => select(buildInfo(), groupRef.current, radius),
   })
 
   return (
@@ -2169,6 +2191,8 @@ function formatApproachDate(dateStr: string): string {
 function NextApproachTicker() {
   const [approach, setApproach] = useState<UpcomingApproach | null>(null)
   const [expanded, setExpanded] = useState(false)
+  const [notifyEnabled, setNotifyEnabled] = useState(false)
+  const notifiedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -2183,10 +2207,44 @@ function NextApproachTicker() {
     }
   }, [])
 
+  // Checks once a minute whether the tracked approach's date has arrived —
+  // a real push notification that survives the tab being closed needs a
+  // backend (VAPID keys, a push server); this only fires while the tab
+  // stays open, which is an honest limitation of a hand-rolled version
+  // rather than a promise the app can't keep.
+  useEffect(() => {
+    if (!notifyEnabled || !approach) return
+    const check = () => {
+      if (notifiedRef.current) return
+      const today = new Date().toISOString().slice(0, 10)
+      if (today >= approach.date) {
+        notifiedRef.current = true
+        new Notification(`${approach.name} — close approach today`, {
+          body: `${(approach.missDistanceKm / 1_000_000).toFixed(1)}M km from Earth`,
+        })
+      }
+    }
+    check()
+    const interval = setInterval(check, 60_000)
+    return () => clearInterval(interval)
+  }, [notifyEnabled, approach])
+
   if (!approach) return null
 
   const millionKm = (approach.missDistanceKm / 1_000_000).toFixed(1)
   const color = approach.isPotentiallyHazardous ? STATUS_HAZARDOUS : STATUS_SAFE
+
+  const handleNotifyClick = (event: React.MouseEvent) => {
+    event.stopPropagation()
+    if (!('Notification' in window)) return
+    if (Notification.permission === 'granted') {
+      setNotifyEnabled((v) => !v)
+      return
+    }
+    Notification.requestPermission().then((permission) => {
+      if (permission === 'granted') setNotifyEnabled(true)
+    })
+  }
 
   // Stacked above the legend pill at the bottom-left, not top-left — the
   // Sun auto-selects on mount, so the info panel is up there by default and
@@ -2194,20 +2252,28 @@ function NextApproachTicker() {
   // for width on a phone screen. Collapsed by default like the legend, for
   // the same reason.
   return (
-    <button
-      type="button"
-      onClick={() => setExpanded((v) => !v)}
-      className="pointer-events-auto absolute bottom-[55px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
-    >
-      <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
-      {expanded ? (
-        <span className="truncate">
-          {approach.name} · {millionKm}M km · {formatApproachDate(approach.date)}
-        </span>
-      ) : (
-        <span>{millionKm}M km this week</span>
-      )}
-    </button>
+    <div className="pointer-events-auto absolute bottom-[55px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+      <button type="button" onClick={() => setExpanded((v) => !v)} className="flex items-center gap-1.5 text-left">
+        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
+        {expanded ? (
+          <span className="truncate">
+            {approach.name} · {millionKm}M km · {formatApproachDate(approach.date)}
+          </span>
+        ) : (
+          <span>{millionKm}M km this week</span>
+        )}
+      </button>
+      {typeof window !== 'undefined' && 'Notification' in window ? (
+        <button
+          type="button"
+          onClick={handleNotifyClick}
+          title="Notify me on approach day"
+          className={`shrink-0 pl-1 ${notifyEnabled ? 'text-white' : 'text-white/40 hover:text-white/70'}`}
+        >
+          {notifyEnabled ? '🔔' : '🔕'}
+        </button>
+      ) : null}
+    </div>
   )
 }
 
@@ -2432,12 +2498,14 @@ export function EarthScene() {
           }}
         >
           <SimulationClockProvider speedRef={speedBox} clockRef={clockBox}>
-            {/* SunLight is the only light in the scene — no ambient fill. */}
-            <SunLight />
             <Earth />
             <MoonOrbitRing />
             <Moon />
             <HeliocentricFrame>
+              {/* SunLight is the only light in the scene — no ambient fill —
+                  co-located with <Sun/> so every object gets its own real
+                  per-position angle to the actual Sun. */}
+              <SunLight />
               <Sun />
               <InnerSolarSystem />
               <CometField />
