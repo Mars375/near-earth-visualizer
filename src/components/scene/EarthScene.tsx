@@ -33,6 +33,7 @@ import type { NearEarthObject } from '@/lib/nasa'
 import {
   COMET_ELEMENTS,
   DWARF_PLANET_ELEMENTS,
+  NAMED_ASTEROID_ELEMENTS,
   PLANETARY_ELEMENTS,
   earthHeliocentricPosition,
   heliocentricPosition,
@@ -46,6 +47,7 @@ import {
   voyagerPosition,
   type CometKey,
   type DwarfPlanetKey,
+  type NamedAsteroidKey,
   type OrbitalElements,
   type PlanetKey,
   type VoyagerKey,
@@ -269,7 +271,7 @@ function RegistryProvider({
 
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-4 top-16 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute right-4 top-28 w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
       <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
@@ -1135,6 +1137,96 @@ function DwarfPlanetField() {
 }
 
 // ---------------------------------------------------------------------------
+// Named asteroids — real JPL orbital elements, same Kepler pipeline as the
+// dwarf planets above, but rendered with their actual mission-derived shape
+// models (Bennu: OSIRIS-REx laser altimetry; Itokawa: Hayabusa) instead of a
+// generic sphere — both are famously irregular, non-spherical bodies, so a
+// sphere marker would misrepresent them.
+// ---------------------------------------------------------------------------
+
+type NamedAsteroidConfig = { key: NamedAsteroidKey; label: string; modelUrl: string; targetSize: number }
+
+const NAMED_ASTEROIDS: NamedAsteroidConfig[] = [
+  { key: 'bennu', label: 'Bennu', modelUrl: '/models/bennu.glb', targetSize: 0.05 },
+  { key: 'itokawa', label: 'Itokawa', modelUrl: '/models/itokawa.glb', targetSize: 0.05 },
+]
+
+useGLTF.preload('/models/bennu.glb')
+useGLTF.preload('/models/itokawa.glb')
+
+function NamedAsteroidModel({ url, targetSize }: { url: string; targetSize: number }) {
+  const model = useNormalizedModel(url, targetSize, '#8a8579', 0.1)
+  return <primitive object={model} />
+}
+
+function namedAsteroidInfo(config: NamedAsteroidConfig): SelectedInfo {
+  const elements = NAMED_ASTEROID_ELEMENTS[config.key]
+  const periodYears = 360 / elements.meanMotionDegPerDay / 365.25
+  return {
+    title: config.label,
+    subtitle: 'Near-Earth asteroid — real shape model, real JPL orbit',
+    rows: [
+      { label: 'Orbital period', value: `${periodYears.toFixed(2)} years` },
+      { label: 'Eccentricity', value: elements.eccentricity.toFixed(3) },
+      { label: 'Semi-major axis', value: `${elements.semiMajorAxisAu.toFixed(2)} AU` },
+      { label: 'Inclination', value: `${elements.inclinationDeg.toFixed(1)}°` },
+    ],
+  }
+}
+
+function NamedAsteroid({ config }: { config: NamedAsteroidConfig }) {
+  const groupRef = useRef<Group>(null)
+  const select = useSelect()
+  const clockRef = useSimulationClock()
+  const elements = NAMED_ASTEROID_ELEMENTS[config.key]
+
+  useFrame(() => {
+    if (!groupRef.current) return
+    const pos = heliocentricPosition(elements, clockRef.current)
+    const [x, y, z] = toScenePosition(pos)
+    groupRef.current.position.set(x, y, z)
+  })
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation()
+    select(namedAsteroidInfo(config), groupRef.current, config.targetSize)
+  }
+
+  useRegisterObject({
+    key: config.key,
+    label: config.label,
+    category: 'Asteroids',
+    onSelect: () => select(namedAsteroidInfo(config), groupRef.current, config.targetSize),
+  })
+
+  return (
+    <group ref={groupRef} onClick={handleClick}>
+      <NamedAsteroidModel url={config.modelUrl} targetSize={config.targetSize} />
+      <ClickTarget onClick={handleClick} small />
+      <ObjectLabel text={config.label} radius={config.targetSize} />
+    </group>
+  )
+}
+
+function NamedAsteroidField() {
+  return (
+    <>
+      {NAMED_ASTEROIDS.map((config) => (
+        <OrbitRing
+          key={`asteroid-ring-${config.key}`}
+          elements={NAMED_ASTEROID_ELEMENTS[config.key]}
+          color="#8a8579"
+          opacity={0.14}
+        />
+      ))}
+      {NAMED_ASTEROIDS.map((config) => (
+        <NamedAsteroid key={config.key} config={config} />
+      ))}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Voyager 1 & 2 — real distance/direction/speed, modeled as linear radial
 // motion (see voyagerPosition in orbitalMechanics.ts for why that's a fair
 // model this far out). No orbit ring: these aren't on a closed orbit, and
@@ -1798,8 +1890,8 @@ function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`rounded border border-white/25 px-2.5 py-1.5 font-mono text-[0.65rem] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
-          open ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70'
+        className={`rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+          open ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
         }`}
       >
         {open ? 'Close' : `Browse (${entries.length})`}
@@ -1908,7 +2000,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
     <button
       type="button"
       onClick={onToggle}
-      className={`pointer-events-auto absolute bottom-14 right-3 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+      className={`pointer-events-auto absolute right-3 top-16 rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
         visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
       }`}
     >
@@ -2117,6 +2209,7 @@ export function EarthScene() {
               <CometField />
               <VoyagerField />
               <DwarfPlanetField />
+              <NamedAsteroidField />
               <Jwst />
               <HelioNeoField objects={trackedObjects} />
             </HeliocentricFrame>

@@ -328,6 +328,34 @@ export const DWARF_PLANET_ELEMENTS: Record<DwarfPlanetKey, OrbitalElements> = {
   },
 }
 
+export type NamedAsteroidKey = 'bennu' | 'itokawa'
+
+/** Real elements from NASA/JPL's Small-Body Database — same source and
+ * shape as the comets/dwarf planets above. Both are near-Earth asteroids
+ * (Apollo-class Bennu, Apollo-class Itokawa), moderate eccentricities. */
+export const NAMED_ASTEROID_ELEMENTS: Record<NamedAsteroidKey, OrbitalElements> = {
+  bennu: {
+    semiMajorAxisAu: 1.126391025894812,
+    eccentricity: 0.2037450762416414,
+    inclinationDeg: 6.03494377024794,
+    ascendingNodeDeg: 2.06086619569642,
+    perihelionArgumentDeg: 66.22306084084298,
+    meanAnomalyDeg: 101.703952002457,
+    meanMotionDegPerDay: 0.8244613503320309,
+    epochJulianDate: 2455562.5,
+  },
+  itokawa: {
+    semiMajorAxisAu: 1.324052284342771,
+    eccentricity: 0.2801776414987972,
+    inclinationDeg: 1.620940810523569,
+    ascendingNodeDeg: 69.07449749929083,
+    perihelionArgumentDeg: 162.8409022415483,
+    meanAnomalyDeg: 170.653905937934,
+    meanMotionDegPerDay: 0.6469137342916093,
+    epochJulianDate: 2461200.5,
+  },
+}
+
 export type VoyagerKey = 'voyager1' | 'voyager2'
 
 type VoyagerState = {
