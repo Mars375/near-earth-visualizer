@@ -267,7 +267,7 @@ function RegistryProvider({
 
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-4 top-[97px] w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute right-4 top-[99px] w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
       <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
@@ -1530,9 +1530,12 @@ function ClickTarget({
 // than helpful. A pure multiple of radius made the smallest objects (NEOs,
 // comets — radius as low as 0.02) need an absurd amount of zoom before the
 // threshold was reached at all, so there's also a flat floor: whichever of
-// "N radii" or this fixed distance is bigger wins.
-const LABEL_HIDE_DISTANCE_FACTOR = 8
-const LABEL_HIDE_DISTANCE_FLOOR = 0.3
+// "N radii" or this fixed distance is bigger wins. The floor is judged
+// against the default camera distance (~9.7 units at load), not against the
+// object's own size — it needs to trigger at a normal, comfortable zoom-in,
+// not deep macro range.
+const LABEL_HIDE_DISTANCE_FACTOR = 10
+const LABEL_HIDE_DISTANCE_FLOOR = 1.2
 
 // OrbitControls' minDistance (how close the camera can zoom to the current
 // orbit target) — comfortably smaller than LABEL_HIDE_DISTANCE_FACTOR so
@@ -1958,7 +1961,7 @@ function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
   }, [filtered])
 
   return (
-    <div className="pointer-events-auto absolute left-4 top-[57px]">
+    <div className="pointer-events-auto absolute left-4 top-[59px]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -2032,7 +2035,7 @@ function TypeLegend({
   ]
 
   return (
-    <div className="pointer-events-auto absolute bottom-[13px] left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[15px] left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -2072,7 +2075,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
     <button
       type="button"
       onClick={onToggle}
-      className={`pointer-events-auto absolute right-4 top-[57px] rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+      className={`pointer-events-auto absolute right-4 top-[59px] rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
         visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
       }`}
     >
@@ -2128,7 +2131,7 @@ function NextApproachTicker() {
     <button
       type="button"
       onClick={() => setExpanded((v) => !v)}
-      className="pointer-events-auto absolute bottom-[53px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
+      className="pointer-events-auto absolute bottom-[55px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
     >
       <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
       {expanded ? (
@@ -2176,7 +2179,7 @@ function TimeTravelControl({ clockRef }: { clockRef: ClockRef }) {
   }
 
   return (
-    <div className="pointer-events-auto absolute bottom-[53px] right-4 flex items-center gap-2 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[55px] right-4 flex items-center gap-2 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <input
         type="date"
         onChange={handleChange}
@@ -2199,7 +2202,7 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('realtime')
 
   return (
-    <div className="pointer-events-auto absolute bottom-[13px] right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[15px] right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       {(Object.keys(SPEED_MODES) as SpeedMode[]).map((key) => (
         <button
           key={key}
