@@ -15,6 +15,7 @@ import {
   AdditiveBlending,
   BackSide,
   Box3,
+  IcosahedronGeometry,
   MeshBasicMaterial,
   MeshStandardMaterial,
   Quaternion,
@@ -266,7 +267,7 @@ function RegistryProvider({
 
 function InfoPanel({ info, onClose }: { info: SelectedInfo; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-4 top-[98px] w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute right-4 top-[97px] w-64 rounded border border-white/25 bg-[#0a0a0d]/90 p-3 font-mono text-xs text-white/85 shadow-[0_2px_16px_rgba(0,0,0,0.6)] backdrop-blur-md">
       <div className="flex items-start justify-between gap-2 border-b border-white/15 pb-2">
         <div>
           <p className="text-sm font-semibold uppercase tracking-[0.1em] text-white">{info.title}</p>
@@ -991,6 +992,46 @@ function cometInfo(config: CometConfig): SelectedInfo {
 const COMET_TAIL_LENGTH = 0.35
 const COMET_TAIL_AXIS = new Vector3(1, 0, 0)
 
+// Deterministic string -> int hash, just to seed each comet's nucleus shape
+// consistently across renders/reloads without needing to store random state.
+function hashSeed(key: string): number {
+  let h = 0
+  for (let i = 0; i < key.length; i += 1) h = (h * 31 + key.charCodeAt(i)) | 0
+  return h
+}
+
+function seededRandom(seed: number): () => number {
+  let t = seed
+  return () => {
+    t += 0x6d2b79f5
+    let r = Math.imul(t ^ (t >>> 15), 1 | t)
+    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+// None of these three comets has ever been imaged closely enough for a real
+// shape model (unlike 67P, which Rosetta mapped in detail — not reachable
+// from this build environment, and a spacecraft model isn't the comet
+// itself anyway) — a lumpy, irregular nucleus is still truer to a real
+// comet than a perfect sphere, so vertices of an icosahedron are displaced
+// by a per-comet deterministic seed instead of faking mission-derived data.
+function useIrregularNucleusGeometry(seed: number, radius: number) {
+  return useMemo(() => {
+    const geometry = new IcosahedronGeometry(radius, 2)
+    const random = seededRandom(seed)
+    const position = geometry.attributes.position
+    const vertex = new Vector3()
+    for (let i = 0; i < position.count; i += 1) {
+      vertex.fromBufferAttribute(position, i)
+      vertex.multiplyScalar(0.65 + random() * 0.55)
+      position.setXYZ(i, vertex.x, vertex.y, vertex.z)
+    }
+    geometry.computeVertexNormals()
+    return geometry
+  }, [seed, radius])
+}
+
 /** Real periodic comets from JPL's Small-Body Database, propagated with the
  * same Keplerian solver as the planets — their orbits are just far more
  * eccentric/inclined (Halley's e=0.97 is why solveEccentricAnomaly got a
@@ -1004,6 +1045,7 @@ function Comet({ config }: { config: CometConfig }) {
   const clockRef = useSimulationClock()
   const elements = COMET_ELEMENTS[config.key]
   const awayFromSun = useMemo(() => new Vector3(), [])
+  const nucleusGeometry = useIrregularNucleusGeometry(hashSeed(config.key), 0.022)
 
   useFrame(() => {
     if (!groupRef.current) return
@@ -1030,9 +1072,8 @@ function Comet({ config }: { config: CometConfig }) {
 
   return (
     <group ref={groupRef} onClick={handleClick}>
-      <mesh>
-        <sphereGeometry args={[0.02, 12, 12]} />
-        <meshBasicMaterial color={config.color} />
+      <mesh geometry={nucleusGeometry}>
+        <meshStandardMaterial color={config.color} roughness={0.95} />
       </mesh>
       <mesh>
         <sphereGeometry args={[0.06, 12, 12]} />
@@ -1486,8 +1527,12 @@ function ClickTarget({
 // Hides the label once the camera is closer than this many multiples of the
 // object's own radius — otherwise a label just sits there overlapping the
 // object once it's filling most of the screen, which looks wrong rather
-// than helpful.
-const LABEL_HIDE_DISTANCE_FACTOR = 6
+// than helpful. A pure multiple of radius made the smallest objects (NEOs,
+// comets — radius as low as 0.02) need an absurd amount of zoom before the
+// threshold was reached at all, so there's also a flat floor: whichever of
+// "N radii" or this fixed distance is bigger wins.
+const LABEL_HIDE_DISTANCE_FACTOR = 8
+const LABEL_HIDE_DISTANCE_FLOOR = 0.3
 
 // OrbitControls' minDistance (how close the camera can zoom to the current
 // orbit target) — comfortably smaller than LABEL_HIDE_DISTANCE_FACTOR so
@@ -1512,7 +1557,7 @@ function ObjectLabel({ text, radius, stackIndex = 0 }: { text: string; radius: n
     if (!groupRef.current) return
     groupRef.current.getWorldPosition(worldPos)
     const distance = state.camera.position.distanceTo(worldPos)
-    const shouldShow = distance > radius * LABEL_HIDE_DISTANCE_FACTOR
+    const shouldShow = distance > Math.max(radius * LABEL_HIDE_DISTANCE_FACTOR, LABEL_HIDE_DISTANCE_FLOOR)
     if (shouldShow !== visible) setVisible(shouldShow)
   })
 
@@ -1913,7 +1958,7 @@ function ObjectMenu({ entries }: { entries: RegistryEntry[] }) {
   }, [filtered])
 
   return (
-    <div className="pointer-events-auto absolute left-4 top-[58px]">
+    <div className="pointer-events-auto absolute left-4 top-[57px]">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -1987,7 +2032,7 @@ function TypeLegend({
   ]
 
   return (
-    <div className="pointer-events-auto absolute bottom-[14px] left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[13px] left-4 max-w-[calc(100vw-2rem)] rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-xs text-white/80 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -2027,7 +2072,7 @@ function SatelliteToggle({ visible, onToggle }: { visible: boolean; onToggle: ()
     <button
       type="button"
       onClick={onToggle}
-      className={`pointer-events-auto absolute right-4 top-[58px] rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
+      className={`pointer-events-auto absolute right-4 top-[57px] rounded border border-white/25 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md ${
         visible ? 'bg-white/20 text-white' : 'bg-[#0a0a0d]/90 text-white/70 hover:bg-white/10'
       }`}
     >
@@ -2083,7 +2128,7 @@ function NextApproachTicker() {
     <button
       type="button"
       onClick={() => setExpanded((v) => !v)}
-      className="pointer-events-auto absolute bottom-[54px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
+      className="pointer-events-auto absolute bottom-[53px] left-4 flex max-w-[80vw] items-center gap-1.5 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 text-left font-mono text-[0.65rem] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md"
     >
       <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
       {expanded ? (
@@ -2131,7 +2176,7 @@ function TimeTravelControl({ clockRef }: { clockRef: ClockRef }) {
   }
 
   return (
-    <div className="pointer-events-auto absolute bottom-[54px] right-4 flex items-center gap-2 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[53px] right-4 flex items-center gap-2 rounded border border-white/25 bg-[#0a0a0d]/90 px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       <input
         type="date"
         onChange={handleChange}
@@ -2154,7 +2199,7 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
   const [mode, setMode] = useState<SpeedMode>('realtime')
 
   return (
-    <div className="pointer-events-auto absolute bottom-[14px] right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
+    <div className="pointer-events-auto absolute bottom-[13px] right-4 flex gap-1 rounded border border-white/25 bg-[#0a0a0d]/90 font-mono text-[0.65rem] uppercase tracking-[0.08em] text-white/70 shadow-[0_2px_12px_rgba(0,0,0,0.5)] backdrop-blur-md">
       {(Object.keys(SPEED_MODES) as SpeedMode[]).map((key) => (
         <button
           key={key}
@@ -2169,6 +2214,33 @@ function TimeControl({ speedRef }: { speedRef: SpeedRef }) {
         </button>
       ))}
     </div>
+  )
+}
+
+// drei's <Stars> places every star in a shell fixed to the scene ORIGIN
+// (radius..radius+depth from (0,0,0)). That's fine while the camera orbits
+// near the origin, but OrbitControls' target — and so the camera — can end
+// up anywhere once a distant object is selected (e.g. an outer planet),
+// which can push the camera outside the fixed shell entirely: stars behind
+// it disappear, which is exactly the "invisible when zoomed/panned out"
+// symptom reported. Recentering the whole starfield on the camera every
+// frame (a standard skybox trick) makes it origin-independent: stars are
+// always at the same *relative* distance from the viewer, so they're always
+// visible regardless of where the current orbit target is.
+const STARFIELD_RADIUS = 60
+const STARFIELD_DEPTH = 40
+
+function CameraCenteredStars() {
+  const groupRef = useRef<Group>(null)
+
+  useFrame((state) => {
+    groupRef.current?.position.copy(state.camera.position)
+  })
+
+  return (
+    <group ref={groupRef}>
+      <Stars radius={STARFIELD_RADIUS} depth={STARFIELD_DEPTH} count={3000} factor={3} />
+    </group>
   )
 }
 
@@ -2300,7 +2372,7 @@ export function EarthScene() {
             <SatelliteConstellation visible={showSatellites} />
             <CameraFocus target={focusTarget} controlsRef={controlsRef} />
           </SimulationClockProvider>
-          <Stars radius={80} depth={40} count={3000} factor={3} />
+          <CameraCenteredStars />
           <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
         <ObjectMenu entries={menuEntries} />
