@@ -41,6 +41,7 @@ import {
   orbitPathPoints,
   subtract,
   unixMsToJulianDate,
+  julianDateToUnixMs,
   jwstPosition,
   voyagerPosition,
   type CometKey,
@@ -462,6 +463,33 @@ const EARTH_INFO: SelectedInfo = {
     { label: 'Orbital period', value: '365.25 days' },
     { label: 'Rotation period', value: '23h 56m' },
   ],
+}
+
+// A thin fixed reference toward celestial north (Earth's rotation axis,
+// +Y in this scene — the same axis latLonAltToPosition's sin(lat) term
+// already assumes) — free orbiting with no fixed horizon makes it easy to
+// lose track of "which way is up" once the camera's been dragged around;
+// this gives a constant visual anchor to reorient against.
+const POLARIS_LINE_LENGTH = 1.4
+
+function PolarisMarker() {
+  const points = useMemo<[number, number, number][]>(
+    () => [
+      [0, EARTH_RADIUS, 0],
+      [0, EARTH_RADIUS + POLARIS_LINE_LENGTH, 0],
+    ],
+    [],
+  )
+  return (
+    <group>
+      <Line points={points} color="#8fb8ff" transparent opacity={0.3} lineWidth={1} />
+      <Html position={[0, EARTH_RADIUS + POLARIS_LINE_LENGTH, 0]} center distanceFactor={10} zIndexRange={[0, 0]}>
+        <div className="pointer-events-none select-none whitespace-nowrap rounded bg-black/40 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/60 backdrop-blur-sm">
+          Celestial north
+        </div>
+      </Html>
+    </group>
+  )
 }
 
 function Earth() {
@@ -1776,22 +1804,19 @@ function FallbackNeoField({ objects }: { objects: NearEarthObject[] }) {
 // Space station (ISS) — Earth-relative, not heliocentric
 // ---------------------------------------------------------------------------
 
-// Real ISS/Hubble orbital periods (~90-95 min) mean pure real wall-clock
-// motion is only a few pixels of arc over a normal few-second glance — easy
-// to mistake for "not moving at all," which is exactly what got reported.
-// Not tied to the planetary time control (its day-scale multipliers would
-// spin a 90-minute orbit into a meaningless blur) — a fixed, modest
-// acceleration instead. Still genuine SGP4 output; just evaluated against
-// an accelerated clock input instead of true real time, same honesty
-// tradeoff as every other "boosted for visibility" constant in this file.
-const NEAR_EARTH_TIME_MULTIPLIER = 60
-
-function useAcceleratedNow(): () => Date {
-  const offsetMsRef = useRef(0)
-  useFrame((_, delta) => {
-    offsetMsRef.current += delta * 1000 * (NEAR_EARTH_TIME_MULTIPLIER - 1)
-  })
-  return () => new Date(Date.now() + offsetMsRef.current)
+// ISS/Hubble now propagate against the same simulation clock as every other
+// object instead of true wall-clock time — Real-time mode still gives their
+// genuine real-time motion (REALTIME_DAYS_PER_SECOND is exactly 1 real
+// second per real second), but the 3d/s and 45d/s controls now visibly
+// speed them up too, same as everything else, instead of being the one
+// pair of objects those buttons silently didn't touch. SGP4 accuracy
+// degrades the farther the evaluated time drifts from the TLE's real
+// epoch — at 45d/s that happens fast — but that's the same honesty
+// tradeoff already accepted for every other simplified model in this file,
+// and consistency with the rest of the scene was the explicit ask here.
+function useSimulatedNow(): () => Date {
+  const clockRef = useSimulationClock()
+  return () => new Date(julianDateToUnixMs(clockRef.current))
 }
 
 // Real NASA/Ames geometry (nasa/NASA-3D-Resources, public domain — 6,628
@@ -1868,7 +1893,7 @@ function IssStation({ onReady }: { onReady: () => void }) {
   const frameCountRef = useRef(0)
   const [ready, setReady] = useState(false)
   const [trail, setTrail] = useState<[number, number, number][]>([])
-  const getAcceleratedNow = useAcceleratedNow()
+  const getSimulatedNow = useSimulatedNow()
 
   useEffect(() => {
     let cancelled = false
@@ -1889,7 +1914,7 @@ function IssStation({ onReady }: { onReady: () => void }) {
 
   useFrame(() => {
     if (!groupRef.current || !satrecRef.current) return
-    const now = getAcceleratedNow()
+    const now = getSimulatedNow()
     const result = propagate(satrecRef.current, now)
     if (!result || !result.position || !result.velocity) return
     const geo = eciToGeodetic(result.position, gstime(now))
@@ -1984,16 +2009,15 @@ const HUBBLE_INFO: SelectedInfo = {
 }
 
 /** Propagated with real orbital state (SGP4), refreshed every frame like the
- * Starlink field — but anchored to (accelerated) real wall-clock time, not
- * the app's adjustable simulation clock: a TLE is only valid near its real
- * epoch, so the day-scale planetary time control can't drive it — see
- * useAcceleratedNow above for why it still needs *some* acceleration. */
+ * Starlink field — driven by the same simulation clock as every other
+ * object now (see useSimulatedNow above), so the time-speed control
+ * actually speeds this up too instead of leaving it inert. */
 function Hubble() {
   const groupRef = useRef<Group>(null)
   const select = useSelect()
   const satrecRef = useRef<SatRec | null>(null)
   const [ready, setReady] = useState(false)
-  const getAcceleratedNow = useAcceleratedNow()
+  const getSimulatedNow = useSimulatedNow()
 
   useEffect(() => {
     let cancelled = false
@@ -2012,7 +2036,7 @@ function Hubble() {
 
   useFrame(() => {
     if (!groupRef.current || !satrecRef.current) return
-    const now = getAcceleratedNow()
+    const now = getSimulatedNow()
     const result = propagate(satrecRef.current, now)
     if (!result || !result.position) return
     const geo = eciToGeodetic(result.position, gstime(now))
@@ -2400,6 +2424,46 @@ function CameraCenteredStars() {
   )
 }
 
+const ONBOARDING_STORAGE_KEY = 'neo-viz-onboarding-dismissed'
+
+/** Shown once — a static Canvas full of clickable objects and no obvious
+ * "start here" has no other hint that tapping things is the whole point.
+ * Dismissal is remembered in localStorage, not app state, since it should
+ * stay dismissed across reloads/visits, not just the current session. */
+function OnboardingTip() {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const seen = window.localStorage.getItem(ONBOARDING_STORAGE_KEY)
+    queueMicrotask(() => {
+      if (!seen) setVisible(true)
+    })
+  }, [])
+
+  const dismiss = () => {
+    setVisible(false)
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, '1')
+  }
+
+  if (!visible) return null
+
+  return (
+    <div className="pointer-events-auto absolute inset-x-6 top-1/2 z-20 mx-auto max-w-xs -translate-y-1/2 rounded border border-white/25 bg-[#0a0a0d]/95 p-4 font-mono text-xs text-white/85 shadow-[0_4px_24px_rgba(0,0,0,0.7)] backdrop-blur-md">
+      <p className="mb-2 text-white/90">Tap any object to explore it.</p>
+      <p className="mb-3 text-white/60">
+        Drag to orbit, pinch or scroll to zoom, use Browse (top-left) to jump straight to anything on the map.
+      </p>
+      <button
+        type="button"
+        onClick={dismiss}
+        className="w-full rounded border border-white/25 bg-white/10 py-1.5 uppercase tracking-wide text-white/85 hover:bg-white/20"
+      >
+        Got it
+      </button>
+    </div>
+  )
+}
+
 export function EarthScene() {
   const [objects, setObjects] = useState<NearEarthObject[]>([])
   const [issTracked, setIssTracked] = useState(false)
@@ -2520,6 +2584,7 @@ export function EarthScene() {
         >
           <SimulationClockProvider speedRef={speedBox} clockRef={clockBox}>
             <Earth />
+            <PolarisMarker />
             <MoonOrbitRing />
             <Moon />
             <HeliocentricFrame>
@@ -2546,6 +2611,7 @@ export function EarthScene() {
           <OrbitControls ref={controlsRef} enablePan minDistance={focusRadius} maxDistance={60} />
         </Canvas>
         <ObjectMenu entries={menuEntries} />
+        <OnboardingTip />
         <TypeLegend neoCount={objects.length} trackedCount={trackedObjects.length} issTracked={issTracked} />
         <NextApproachTicker />
         <SatelliteToggle visible={showSatellites} onToggle={() => setShowSatellites((v) => !v)} />

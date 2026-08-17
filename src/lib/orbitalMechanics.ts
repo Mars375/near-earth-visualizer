@@ -17,6 +17,10 @@ export function unixMsToJulianDate(unixMs: number): number {
   return unixMs / 86400000 + 2440587.5
 }
 
+export function julianDateToUnixMs(julianDate: number): number {
+  return (julianDate - 2440587.5) * 86400000
+}
+
 function degToRad(deg: number): number {
   return (deg * Math.PI) / 180
 }
